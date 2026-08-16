@@ -1,0 +1,21 @@
+# luci-app-miair
+
+轻量级 OpenWrt / LuCI 小爱音箱 AirPlay 桥接插件。
+
+### 特性
+- **轻量原生**：Go 语言自研核心守护进程，体积小（< 7MB），无 Docker / Python 依赖。
+- **AirPlay 1 协议支持**：支持 iPhone / iPad / Mac 隔空播放音频串流。
+- **免手动填写 DID**：输入小米账号即可自动识别并绑定小爱音箱。
+- **原生 LuCI 界面**：完美适配 OpenWrt / QWRT 路由器 Web 管理界面。
+
+### 目录结构
+- `core/`: Go 编写的核心守护进程源码与交叉编译脚本。
+- `luasrc/`: LuCI 控制器与 CBI 模型界面。
+- `root/`: OpenWrt 服务配置文件及 procd 守护脚本。
+
+### 编译与安装
+```bash
+# 交叉编译核心
+cd core
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o miair-core .
+```

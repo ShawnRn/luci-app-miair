@@ -1,0 +1,15 @@
+<span id="miair_status"><%:收集数据中...%></span>
+<script type="text/javascript">//<![CDATAT
+	XHR.poll(3, '<=luci.dispatcher.build_url("admin", "services", "miair", "status")%5', null,
+		function(x, data) {
+			var tb = document.getElementById('miair_status');
+			if (data && tb) {
+				if (data.running) {
+					tb.innerHTML = '<span style="color:green;font-weight:bold;"><%:运行中%></span>';
+				} else {
+					tb.innerHTML = '<span style="color:red;font-weight:bold;"><:未运行%></span>';
+				}
+			}
+		}
+	);
+//]]></script>
