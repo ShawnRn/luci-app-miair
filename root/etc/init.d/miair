@@ -32,7 +32,7 @@ start_service() {
 	procd_append_param command -store "$store"
 	[ -n "$account" ] && procd_append_param command -user "$account"
 	[ -n "$password" ] && procd_append_param command -pass "$password"
-	[ -n "$did" ] && procd_append_param command -did "$did"
+	[ -n "$did" ] && procd_append_param command -device "$did"
 
 	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
 	procd_set_param stdout 1

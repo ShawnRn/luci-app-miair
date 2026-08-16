@@ -95,13 +95,14 @@ function action_get_devices()
 
 	local devices = {}
 	for line in string.gmatch(result, '[^%r%n]+') do
-		local did, name, hw, ip = string.match(line, 'DID:%s*([^|]+)%s*|%s*Name:%s*([^|]+)%s*|%s*Hardware:%s*([^|]+)%s*|%s*IP:%s*(.+)')
+		local did, name, hw = string.match(line, 'DID:%s*([^|]+)%s*|%s*Name:%s*([^|]+)%s*|%s*Hardware:%s*([^|]+)')
 		if did and name then
+			local ip = string.match(line, '|%s*IP:%s*(.*)$') or ""
 			table.insert(devices, {
 				did = string.gsub(did, "^%s*(.-)%s*$", "%1"),
 				name = string.gsub(name, "^%s*(.-)%s*$", "%1"),
-				hardware = hw and string.gsub(hw, "^%s*(.-)%s*$", "%1") or "",
-				ip = ip and string.gsub(ip, "^%s*(.-)%s*$", "%1") or ""
+				hardware = string.gsub(hw, "^%s*(.-)%s*$", "%1"),
+				ip = string.gsub(ip, "^%s*(.-)%s*$", "%1")
 			})
 		end
 	end
