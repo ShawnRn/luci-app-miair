@@ -75,7 +75,6 @@ func main() {
 	if *flagList {
 		account := miservice.NewAccount(*flagStore)
 		if *flagUser != "" && *flagPass != "" && account.Data.PassToken == "" {
-			_ = account.LoginByPassword(*flagUser, *flagPass)
 		}
 
 		devs, err := account.DeviceList(0)
@@ -92,7 +91,6 @@ func main() {
 	// 4. Runtime Mode
 	account := miservice.NewAccount(*flagStore)
 	if *flagUser != "" && *flagPass != "" && account.Data.PassToken == "" {
-		_ = account.LoginByPassword(*flagUser, *flagPass)
 	}
 
 	targetDID := *flagDevice

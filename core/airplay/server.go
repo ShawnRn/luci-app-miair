@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -308,7 +307,7 @@ func (s *Server) parseSDP(sdp string) {
 			b64 := strings.TrimPrefix(line, "a=rsaaeskey:")
 			encKey, err := base64.StdEncoding.DecodeString(b64)
 			if err == nil && s.rsaKey != nil {
-				key, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, s.rsaKey, encKey, nil)
+				key, err := rsa.DecryptPKCS1v15(rand.Reader, s.rsaKey, encKey)
 				if err == nil {
 				s.aesKey = key
 				log.Printf("[AirPlay] RSA AES key decoded successfully (%d bytes)", len(key))
