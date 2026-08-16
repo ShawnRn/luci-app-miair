@@ -185,15 +185,39 @@ func (s *Server) registerMDNS() {
 	}
 }
 
+func (s *Server) buildWavHeader() []byte {
+	h := make([]byte, 44)
+	copy(h[0:4], []byte("RIFF"))
+	binary.LittleEndian.PutUint32(h[4:8], 0x7FFFFF00+36)
+	copy(h[8:12], []byte("WAVE"))
+	copy(h[12:16], []byte("fmt "))
+	binary.LittleEndian.PutUint32(h[16:20], 16)
+	binary.LittleEndian.PutUint16(h[20:22], 1) // PCM
+	binary.LittleEndian.PutUint16(h[22:24], 2) // 2 channels
+	binary.LittleEndian.PutUint32(h[24:28], 44100) // 44100 Hz
+	binary.LittleEndian.PutUint32(h[28:32], 44100*2*2) // byte rate
+	binary.LittleEndian.PutUint16(h[32:34], 4) // block align
+	binary.LittleEndian.PutUint16(h[34:36], 16) // 16 bits
+	copy(h[36:40], []byte("data"))
+	binary.LittleEndian.PutUint32(h[40:44], 0x7FFFFF00)
+	return h
+}
+
 func (s *Server) startHTTPServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.StreamPath, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "audio/l16;rate=44100;channels=2")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Cache-Control", "no-cache, no-store")
+		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
+		w.Write(s.buildWavHeader())
 		flusher, ok := w.(http.Flusher)
+		if ok {
+			flusher.Flush()
+		}
+
 		ch := s.Hub.Subscribe()
 		defer s.Hub.Unsubscribe(ch)
 
