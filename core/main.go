@@ -21,9 +21,10 @@ var (
 	flagHTTP   = flag.Int("http-port", 8300, "Local HTTP audio stream port")
 	flagUser   = flag.String("user", "", "Mi Account Username")
 	flagPass   = flag.String("pass", "", "Mi Account Password")
-	flagCookie = flag.String("cookie", "", "Mi Account Cookie file or string (optional)")
-	flagStore  = flag.String("store", "/tmp/.mi_token.json", "Token store path")
+	flagStore  = flag.String("store", "/etc/miair/token.json", "Token store path")
 	flagList   = flag.Bool("list", false, "List XiaoAi devices in account")
+	flagQR     = flag.Bool("qr", false, "Start QR login flow")
+	flagPollQR = flag.String("poll-qr", "", "Poll QR login lp url")
 )
 
 func getLocalIP() string {
@@ -44,13 +45,40 @@ func getLocalIP() string {
 func main() {
 	flag.Parse()
 
-	if *flagList {
-		if *flagUser == "" || *flagPass == "" {
-			log.Fatal("Username and password required for listing devices")
+	// 1. QR Code initialization
+	if *flagQR {
+		account := miservice.NewAccount(*flagStore)
+		qrInfo, err := account.GetQRLoginInfo()
+		if err != nil {
+			log.Fatalf("Failed to get QR info: %v", err)
 		}
-		client := miservice.NewClient(*flagUser, *flagPass, *flagCookie, *flagStore)
-		mina := miservice.NewMiNAService(client)
-		devs, err := mina.DeviceList(0)
+		fmt.Printf("QR_URL:%s|LP_URL:%s|TIMEOUT:%d\n", qrInfo.QR, qrInfo.LP, qrInfo.Timeout)
+		os.Exit(0)
+	}
+
+	// 2. Poll QR Code login status
+	if *flagPollQR != "" {
+		account := miservice.NewAccount(*flagStore)
+		status, token, err := account.PollQRLogin(*flagPollQR)
+		if err != nil {
+			log.Fatalf("Poll error: %v", err)
+		}
+		if token != nil {
+			fmt.Printf("SUCCESS:USER_ID:%s\n", token.UserID)
+		} else {
+			fmt.Printf("STATUS:%s\n", status)
+		}
+		os.Exit(0)
+	}
+
+	// 3. List XiaoAi devices
+	if *flagList {
+		account := miservice.NewAccount(*flagStore)
+		if *flagUser != "" && *flagPass != "" && account.Data.PassToken == "" {
+			_ = account.LoginByPassword(*flagUser, *flagPass)
+		}
+
+		devs, err := account.DeviceList(0)
 		if err != nil {
 			log.Fatalf("Failed to get devices: %v", err)
 		}
@@ -61,14 +89,22 @@ func main() {
 		return
 	}
 
-	if *flagDevice == "" {
-		log.Println("No --device specified. AirPlay server will stream audio locally without pushing to XiaoAi.")
+	// 4. Runtime Mode
+	account := miservice.NewAccount(*flagStore)
+	if *flagUser != "" && *flagPass != "" && account.Data.PassToken == "" {
+		_ = account.LoginByPassword(*flagUser, *flagPass)
 	}
 
-	var mina *miservice.MiNAService
-	if *flagUser != "" && *flagPass != "" {
-		client := miservice.NewClient(*flagUser, *flagPass, *flagCookie, *flagStore)
-		mina = miservice.NewMiNAService(client)
+	targetDID := *flagDevice
+	if targetDID == "" {
+		// Auto-detect first XiaoAi speaker if not specified
+		devs, err := account.DeviceList(0)
+		if err == nil && len(devs) > 0 {
+			targetDID = devs[0].DeviceID
+			log.Printf("Auto-selected XiaoAi speaker: %s (%s)", devs[0].Name, targetDID)
+		} else {
+			log.Println("No device specified and unable to auto-discover. Stream available at local HTTP port.")
+		}
 	}
 
 	localIP := getLocalIP()
@@ -81,11 +117,10 @@ func main() {
 
 	server.OnPlay = func() {
 		log.Printf("AirPlay streaming started! Stream URL: %s", streamURL)
-		if mina != nil && *flagDevice != "" {
+		if targetDID != "" {
 			go func() {
-				// Retry or call play_by_music_url
-				log.Printf("Instructing XiaoAi [%s] to play stream...", *flagDevice)
-				err := mina.PlayByMusicURL(*flagDevice, streamURL)
+				log.Printf("Instructing XiaoAi [%s] to play stream...", targetDID)
+				err := account.PlayByMusicURL(targetDID, streamURL)
 				if err != nil {
 					log.Printf("Error triggering XiaoAi playback: %v", err)
 				} else {
@@ -97,10 +132,10 @@ func main() {
 
 	server.OnStop = func() {
 		log.Println("AirPlay streaming stopped.")
-		if mina != nil && *flagDevice != "" {
+		if targetDID != "" {
 			go func() {
-				log.Printf("Stopping XiaoAi [%s]...", *flagDevice)
-				_ = mina.PlayerPause(*flagDevice)
+				log.Printf("Stopping XiaoAi [%s]...", targetDID)
+				_ = account.PlayerPause(targetDID)
 			}()
 		}
 	}
@@ -119,3 +154,4 @@ func main() {
 	log.Println("Shutting down miair-core...")
 	time.Sleep(500 * time.Millisecond)
 }
+

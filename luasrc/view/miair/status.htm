@@ -1,15 +1,147 @@
-<span id="miair_status"><%:收集数据中...%></span>
-<script type="text/javascript">//<![CDATAT
-	XHR.poll(3, '<=luci.dispatcher.build_url("admin", "services", "miair", "status")%5', null,
+<style>
+.miair-status-badge {
+	display: inline-block;
+	padding: 2px 8px;
+	border-radius: 4px;
+	font-weight: bold;
+	font-size: 12px;
+}
+.miair-running { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.miair-stopped { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+.miair-qr-box {
+	display: inline-block;
+	padding: 10px;
+	background: #fff;
+	border: 1px solid #ddd;
+	border-radius: 6px;
+	text-align: center;
+}
+</style>
+
+<fieldset class="cbi-section">
+	<legend><%:运行状态与快捷操作%></legend>
+	<div class="cbi-value">
+		<label class="cbi-value-title"><%:服务运行状态%></label>
+		<div class="cbi-value-field">
+			<span id="miair_status_badge" class="miair-status-badge miair-stopped"><%:正在检查...%></span>
+			<span id="miair_token_badge" style="margin-left: 10px; font-size: 12px; color: #666;"></span>
+		</div>
+	</div>
+	<div class="cbi-value">
+		<label class="cbi-value-title"><%:小米账号快速登录%></label>
+		<div class="cbi-value-field">
+			<input type="button" class="cbi-button cbi-button-action" id="btn_qr_login" value="<%:米家/小米 App 扫码授权登录%>" onclick="startQRLogin()" />
+			<input type="button" class="cbi-button cbi-button-apply" id="btn_fetch_devices" style="margin-left: 8px;" value="<%:刷新/自动识别小爱音箱 DID%>" onclick="fetchDevices()" />
+			<span id="miair_action_msg" style="margin-left: 12px; font-size: 13px;"></span>
+			
+			<div id="miair_qr_container" style="display: none; margin-top: 15px;">
+				<div class="miair-qr-box">
+					<img id="miair_qr_img" src="" width="200" height="200" style="display: block; margin: 0 auto 8px auto;" />
+					<div id="miair_qr_tip" style="font-size: 12px; color: #555;"><%:请使用 米家 App 扫一扫授权登录%></div>
+				</div>
+			</div>
+		</div>
+	</div>
+</fieldset>
+
+<script type="text/javascript">//<![CDATA[
+var pollTimer = null;
+var pollCount = 0;
+
+XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status")%>', null,
+	function(x, data) {
+		var badge = document.getElementById('miair_status_badge');
+		var tokenBadge = document.getElementById('miair_token_badge');
+		if (data && badge) {
+			if (data.running) {
+				badge.className = 'miair-status-badge miair-running';
+				badge.innerHTML = '<%:运行中 (AirPlay 广播正常)%>';
+			} else {
+				badge.className = 'miair-status-badge miair-stopped';
+				badge.innerHTML = '<%:未运行%>';
+			}
+			if (data.has_token) {
+				tokenBadge.innerHTML = '<span style="color: #28a745;">✓ 已有小米云端授权凭据</span>';
+			} else {
+				tokenBadge.innerHTML = '<span style="color: #dc3545;">! 尚未授权登录</span>';
+			}
+		}
+	}
+);
+
+function startQRLogin() {
+	var msg = document.getElementById('miair_action_msg');
+	var container = document.getElementById('miair_qr_container');
+	var qrImg = document.getElementById('miair_qr_img');
+	var qrTip = document.getElementById('miair_qr_tip');
+	
+	msg.innerHTML = '<span style="color: #007bff;"><%:正在向小米服务器请求授权二维码...%></span>';
+	if (pollTimer) clearInterval(pollTimer);
+	
+	XHR.get('<%=luci.dispatcher.build_url("admin", "services", "miair", "get_qr")%>', null,
 		function(x, data) {
-			var tb = document.getElementById('miair_status');
-			if (data && tb) {
-				if (data.running) {
-					tb.innerHTML = '<span style="color:green;font-weight:bold;"><%:运行中%></span>';
-				} else {
-					tb.innerHTML = '<span style="color:red;font-weight:bold;"><:未运行%></span>';
+			if (!data || data.code !== 0) {
+				msg.innerHTML = '<span style="color: red;"><%:获取二维码失败: %>' + (data ? data.msg : '<%:网络超时%>') + '</span>';
+				return;
+			}
+			
+			qrImg.src = data.qr_url;
+			container.style.display = 'block';
+			msg.innerHTML = '<span style="color: green;"><%:二维码获取成功，请打开 米家 / 小米 App 扫码%></span>';
+			qrTip.innerHTML = '<%:等待扫码确认中...%>';
+			
+			pollCount = 0;
+			pollTimer = setInterval(function() {
+				pollCount++;
+				if (pollCount > 100) {
+					clearInterval(pollTimer);
+					qrTip.innerHTML = '<span style="color: red;"><%:二维码已过期，请重新点击扫码登录%></span>';
+					return;
 				}
+				
+				XHR.get('<%=luci.dispatcher.build_url("admin", "services", "miair", "poll_qr")%>', { lp_url: data.lp_url },
+					function(x, res) {
+						if (res && res.code === 0) {
+							if (res.status === 'ok') {
+								clearInterval(pollTimer);
+								container.style.display = 'none';
+								msg.innerHTML = '<span style="color: green; font-weight: bold;"><%:🎉 授权成功！小米账号已绑定 (用户ID: %>' + (res.user_id || '') + ')</span>';
+								fetchDevices();
+							} else if (res.status === 'expired') {
+								clearInterval(pollTimer);
+								qrTip.innerHTML = '<span style="color: red;"><%:二维码已过期，请重新点击%></span>';
+							}
+						}
+					}
+				);
+			}, 3000);
+		}
+	);
+}
+
+function fetchDevices() {
+	var msg = document.getElementById('miair_action_msg');
+	msg.innerHTML = '<span style="color: #007bff;"><%:正在查询您名下的小爱音箱设备列表...%></span>';
+	
+	XHR.get('<%=luci.dispatcher.build_url("admin", "services", "miair", "get_devices")%>', null,
+		function(x, data) {
+			if (!data || data.code !== 0) {
+				msg.innerHTML = '<span style="color: red;"><%:查询设备失败: %>' + (data ? data.msg : '<%:网络超时%>') + '</span>';
+				return;
+			}
+			
+			if (data.devices && data.devices.length > 0) {
+				var dev = data.devices[0];
+				var didInput = document.getElementsByName('cbid.miair.config.did')[0];
+				if (didInput) {
+					didInput.value = dev.did;
+				}
+				msg.innerHTML = '<span style="color: green; font-weight: bold;"><%:已自动匹配小爱音箱: %>' + dev.name + ' (DID: ' + dev.did + ' / 型号: ' + dev.hardware + ' / IP: ' + dev.ip + ')</span>';
+			} else {
+				msg.innerHTML = '<span style="color: orange;"><%:未找到可用的小爱音箱%></span>';
 			}
 		}
 	);
+}
 //]]></script>
+
