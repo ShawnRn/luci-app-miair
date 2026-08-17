@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -13,20 +14,24 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"miair-core/pkg_alac"
 	"github.com/grandcat/zeroconf"
+	"miair-core/pkg_alac"
 )
 
 var airportPrivateKeyPEM = func() string {
 	b, _ := base64.StdEncoding.DecodeString("LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcFFJQkFBS0NBUUVBNTlkRThxTGllSXRzSDFXZ2pyY0ZSS2o2ZVVXcWkrYkdMT1gxSEwzVTNHaEMvajBRZzkwdTNzRy8xQ1V0CndDNXZPWXZmRG1GSTZvU0ZYaTVFTGFiV0ptVDJkS0h6QkpLYTNrOW9rKzh0OXVjUnFNZDZEWkhKMllDQ0xsRFJLU0t2NmtEcW53NFUKd1BkcE9NWHppQy9BTWozWi9sVVZYMUc3V1NIQ0FXS2Yxek5TMWVMdnFyK2JvRWpYdUJPaXRuWi9iRHpQSHJUT1p6MERldzB1b3d4ZgovK3NHK05DSzNlUUpWeHFjYUovdkVIS0lWZDJNKzVxTDcxeUpRKzg3WDZvVjNlYVl2dDN6V1pZRDZ6NXZZVGNydGlqMlZaOVptbmkvClVBYUhxbjlKZHNCV0xVRXBWdmlZbmhpbU5WdllGWmVDWGcvSWRUUSt4NElSZGlYTnY1aEVld0lEQVFBQkFvSUJBUURsOEF4eTlYZlcKQkxta3prRWlxb1N3RjBQc21WclB6SDlLc253TEdIK1FabHZqV2Q4U1dZR043dTE1MDdIdmhGNU4zZHJKb1ZVM08xNG5EWTRURlFBYQpMbEo5Vk0zNUFBcFhhTHlZMUVSck43dTlBTEtkMkxVd1loTTdLbTUzOU80eVVGWWlrRTJuSVBzY0VzQTVsdHB4T2dVR0NZN2I3ZXo1Ck50RDZuTDFaS2F1dzdhTlhtVkF2bUpUY3VQeFdtb2t0RjNnREpLSzJ3eFp1TkdjSkUwdUZRRUc0WjNCcldQN3lvTnVTSzNkaWkyam0KbHBQSHIwTy9LblBRdHpJM2VndWhlMFR3VWVtL2VZU2R5ek15VngvWXB3a3p3dFlMM3NSNWswbzlyS1FMdHZMemZBcWRCeEJ1cmNpegphYUEvTDBISWdBbU9pdDFHSkEyc2FNeFRWUE5oQW9HQkFQZmd2MW9lWnhneG1vdGlDY01YRkVRRVdmbHpoV1lUc1hyaFVJdXo1akZ1CmEzOUdMUzk5WkVFcmhMZHJ3ajhyRERWaVJWSjVza09wOXpGdmxZQUhzMHhoOTJqaTFFN1YveXNuS0Jmc01yUGtrNUtTS1BybmpuZE0Kb1BkZXZXblZrZ0o1anhGdU5neGtPTE11RzlpNTNCNHlNdkRUQ1JpSVBNUSsrTjJpTERhUkFvR0JBTzl2Ly9tVThlVmtRYW9BTmYwWgpvTWpXOENONHh3V0EyY1NFSUhrZDlBZkZrZnR1djhveUxEQ0czWkFmMHZyaHJydGtyZmE3ZWYrQVViNjlETmdncTRtSFFBWUJwN0wrCms1REt6SnJLdU8wcitSMFliWTlwWkQxKy9nOWRWdDkxZDZMUU5lcFVFL3lZMlBQNUNOb0ZtamVkcExITU9QRmRWZ3FEekRGeFU4aEwKQW9HQkFORHJyN3hBSmJxQmpIVndJelE0VG85cGI0Qk5lcURuZGs1UWU3ZlQzKy9IMW5qR2FDMC9yWEUwUWI3cTV5U2duc0NiM0R2QQpjSnlSTTlTSjdPS2xHdDBGTVNkSkQ1S0cwWFBJcEFWTndncFhYSDVNREpnMDlLSGVoMGtYbytRQTZ2aUZCaTIxeTM0ME5vbm5FZmRmCjU0UFg0WkdTL1hhYzFVSytwTGtCQit6UkFvR0FmMEFZM0gzcUtTMmxNRUk0YnpFRm9IZUszRzg5NXBEYUszVEZCVm1EN2ZWMFpob3YKMTdmZWdGUE13T0lJOE1pc1ltOVpmVDJaMHM1Um8zczVya3QrbnZMQWRmQy9QWVBLelRMYWxwR1N3b21TTllKY0I5SE5NbG1oa0d6YwoxSm5MWVQ0aXlVeXg2cGNaQm1DZDhiRDBpd1kvRnpjZ05EYVVtYlg5K1hEdlJBMENnWUVBa0U3cElQbEU3MXF2ZkpRZ29BOWVtMGdJCkxBdUU0UHUxM2FLaUpuZmZ0N2hJamJLKzVreWIzVHlzWnZveURuYjNIT0t2SW5LN3ZYYkt1VTRJU2d4QjJiQjNIY1l6UU1Hc3oxcUoKMmdHME41aHZKcHp3d2hiaFhxRktBNHphYVNydzYyMndEbmlBSzVNbElFMHRJQUtLUDR5eE5Ham9EMlFZamhCR3VodmtXS1k9Ci0tLS0tRU5EIFJTQSBQUklWQVRFIEtFWS0tLS0t")
 	return string(b)
 }()
+
+const ntpEpochOffset = 2208988800
 
 type AudioStreamHub struct {
 	mu        sync.Mutex
@@ -76,14 +81,19 @@ type Server struct {
 	OnPlay     func()
 	OnStop     func()
 
-	rsaKey     *rsa.PrivateKey
-	aesKey     []byte
-	aesIV      []byte
-	alacDec    *alac.Decoder
+	rsaKey  *rsa.PrivateKey
+	aesKey  []byte
+	aesIV   []byte
+	alacDec *alac.Decoder
 
 	serverUDP  *net.UDPConn
 	rtpPort    int
+	controlUDP *net.UDPConn
+	ctrlPort   int
+	timingUDP  *net.UDPConn
+	timingPort int
 	mdnsServer *zeroconf.Server
+	macBytes   []byte
 }
 
 func NewServer(name string, port int, httpPort int, streamPath string) (*Server, error) {
@@ -96,6 +106,16 @@ func NewServer(name string, port int, httpPort int, streamPath string) (*Server,
 		return nil, err
 	}
 
+	mac := []byte{0x80, 0xAF, 0xCA, 0x8C, 0x45, 0xB8}
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			if len(iface.HardwareAddr) == 6 && (iface.Flags&net.FlagLoopback == 0) {
+				mac = iface.HardwareAddr
+				break
+			}
+		}
+	}
+
 	return &Server{
 		Name:       name,
 		Port:       port,
@@ -103,6 +123,7 @@ func NewServer(name string, port int, httpPort int, streamPath string) (*Server,
 		StreamPath: streamPath,
 		Hub:        NewAudioStreamHub(),
 		rsaKey:     privKey,
+		macBytes:   mac,
 	}, nil
 }
 
@@ -115,14 +136,28 @@ func (s *Server) Start() error {
 	}
 	log.Printf("[AirPlay] RTSP Server listening on port %d", s.Port)
 
-	udpAddr, err := net.ResolveUDPAddr("udp", ":0")
-	if err == nil {
-		s.serverUDP, err = net.ListenUDP("udp", udpAddr)
-		if err == nil {
-			s.rtpPort = s.serverUDP.LocalAddr().(*net.UDPAddr).Port
-			log.Printf("[AirPlay] RTP Audio listening on UDP port %d", s.rtpPort)
-			go s.handleUDPPackets()
-		}
+	// Audio RTP
+	if rtpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
+		s.serverUDP = rtpConn
+		s.rtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
+		log.Printf("[AirPlay] RTP Audio listening on UDP port %d", s.rtpPort)
+		go s.handleUDPPackets()
+	}
+
+	// Control UDP (RTCP)
+	if ctrlConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
+		s.controlUDP = ctrlConn
+		s.ctrlPort = ctrlConn.LocalAddr().(*net.UDPAddr).Port
+		log.Printf("[AirPlay] Control RTCP listening on UDP port %d", s.ctrlPort)
+		go s.handleControlPackets()
+	}
+
+	// Timing UDP (NTP)
+	if timeConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
+		s.timingUDP = timeConn
+		s.timingPort = timeConn.LocalAddr().(*net.UDPAddr).Port
+		log.Printf("[AirPlay] Timing NTP listening on UDP port %d", s.timingPort)
+		go s.handleTimingPackets()
 	}
 
 	s.registerMDNS()
@@ -141,16 +176,9 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) registerMDNS() {
-	mac := "00:11:22:33:44:55"
-	if ifaces, err := net.Interfaces(); err == nil {
-		for _, iface := range ifaces {
-			if len(iface.HardwareAddr) == 6 {
-				mac = iface.HardwareAddr.String()
-				break
-			}
-		}
-	}
-	rawMAC := strings.ReplaceAll(strings.ToUpper(mac), ":", "")
+	rawMAC := fmt.Sprintf("%02X%02X%02X%02X%02X%02X",
+		s.macBytes[0], s.macBytes[1], s.macBytes[2],
+		s.macBytes[3], s.macBytes[4], s.macBytes[5])
 
 	txt := []string{
 		"txtvers=1",
@@ -185,6 +213,73 @@ func (s *Server) registerMDNS() {
 	}
 }
 
+func (s *Server) computeAppleResponse(challB64 string, localAddr net.Addr) string {
+	challB64 = strings.TrimSpace(challB64)
+	for len(challB64)%4 != 0 {
+		challB64 += "="
+	}
+	challBytes, err := base64.StdEncoding.DecodeString(challB64)
+	if err != nil {
+		return ""
+	}
+	if len(challBytes) > 16 {
+		log.Printf("[RTSP] Ignoring oversized Apple-Challenge (%d bytes)", len(challBytes))
+		return ""
+	}
+	var receiverIP []byte
+	if tcpAddr, ok := localAddr.(*net.TCPAddr); ok && tcpAddr.IP != nil {
+		if ip4 := tcpAddr.IP.To4(); ip4 != nil {
+			receiverIP = ip4
+		} else {
+			receiverIP = tcpAddr.IP.To16()
+		}
+	}
+	if receiverIP == nil {
+		receiverIP = []byte{192, 168, 10, 1}
+	}
+
+	mac6 := make([]byte, 6)
+	copy(mac6, s.macBytes)
+
+	// RAOP authenticates the receiver by signing challenge || receiver IP ||
+	// receiver MAC, padded to a minimum of 32 bytes. With IPv6 this is 38 bytes
+	// and must not be truncated. Padding the challenge itself, or truncating the
+	// IPv6 form, produces a response that Apple clients reject.
+	signedData := make([]byte, 0, 38)
+	signedData = append(signedData, challBytes...)
+	signedData = append(signedData, receiverIP...)
+	signedData = append(signedData, mac6...)
+	if len(signedData) < 32 {
+		signedData = append(signedData, make([]byte, 32-len(signedData))...)
+	}
+
+	k := s.rsaKey.Size()
+	msg := make([]byte, k)
+	msg[0] = 0x00
+	msg[1] = 0x01
+	padLen := k - 3 - len(signedData)
+	for i := 0; i < padLen; i++ {
+		msg[2+i] = 0xFF
+	}
+	msg[2+padLen] = 0x00
+	copy(msg[3+padLen:], signedData)
+
+	c := new(big.Int).SetBytes(msg)
+	m := new(big.Int).Exp(c, s.rsaKey.D, s.rsaKey.N)
+	mBytes := m.Bytes()
+	if len(mBytes) < k {
+		paddedM := make([]byte, k)
+		copy(paddedM[k-len(mBytes):], mBytes)
+		mBytes = paddedM
+	}
+
+	respB64 := base64.StdEncoding.EncodeToString(mBytes)
+	for len(respB64) > 0 && respB64[len(respB64)-1] == '=' {
+		respB64 = respB64[:len(respB64)-1]
+	}
+	return respB64
+}
+
 func (s *Server) buildWavHeader() []byte {
 	h := make([]byte, 44)
 	copy(h[0:4], []byte("RIFF"))
@@ -192,12 +287,12 @@ func (s *Server) buildWavHeader() []byte {
 	copy(h[8:12], []byte("WAVE"))
 	copy(h[12:16], []byte("fmt "))
 	binary.LittleEndian.PutUint32(h[16:20], 16)
-	binary.LittleEndian.PutUint16(h[20:22], 1) // PCM
-	binary.LittleEndian.PutUint16(h[22:24], 2) // 2 channels
-	binary.LittleEndian.PutUint32(h[24:28], 44100) // 44100 Hz
-	binary.LittleEndian.PutUint32(h[28:32], 44100*2*2) // byte rate
-	binary.LittleEndian.PutUint16(h[32:34], 4) // block align
-	binary.LittleEndian.PutUint16(h[34:36], 16) // 16 bits
+	binary.LittleEndian.PutUint16(h[20:22], 1)
+	binary.LittleEndian.PutUint16(h[22:24], 2)
+	binary.LittleEndian.PutUint32(h[24:28], 44100)
+	binary.LittleEndian.PutUint32(h[28:32], 44100*2*2)
+	binary.LittleEndian.PutUint16(h[32:34], 4)
+	binary.LittleEndian.PutUint16(h[34:36], 16)
 	copy(h[36:40], []byte("data"))
 	binary.LittleEndian.PutUint32(h[40:44], 0x7FFFFF00)
 	return h
@@ -206,6 +301,7 @@ func (s *Server) buildWavHeader() []byte {
 func (s *Server) startHTTPServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.StreamPath, func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[HTTP] New stream client connected from %s", r.RemoteAddr)
 		w.Header().Set("Content-Type", "audio/wav")
 		w.Header().Set("Cache-Control", "no-cache, no-store")
 		w.Header().Set("Pragma", "no-cache")
@@ -237,10 +333,11 @@ func (s *Server) startHTTPServer() {
 
 func (s *Server) handleRTSP(conn net.Conn) {
 	defer conn.Close()
+	log.Printf("[RTSP] New connection from %s", conn.RemoteAddr().String())
 	reader := bufio.NewReader(conn)
 
 	for {
-		line, err := reader.ReadString(10)
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			break
 		}
@@ -255,11 +352,12 @@ func (s *Server) handleRTSP(conn net.Conn) {
 		}
 		method := parts[0]
 		uri := parts[1]
+		log.Printf("[RTSP] %s %s from %s", method, uri, conn.RemoteAddr())
 
 		headers := make(map[string]string)
 		var contentLength int
 		for {
-			hLine, err := reader.ReadString(10)
+			hLine, err := reader.ReadString('\n')
 			if err != nil {
 				break
 			}
@@ -293,7 +391,14 @@ func (s *Server) dispatchRTSP(conn net.Conn, method, uri string, headers map[str
 	respHeaders := []string{
 		"RTSP/1.0 200 OK",
 		"CSeq: " + cseq,
-		"Server: AirTunes/220.68",
+		"Server: AirTunes/105.1",
+	}
+
+	if chall, ok := headers["apple-challenge"]; ok {
+		resp := s.computeAppleResponse(chall, conn.LocalAddr())
+		if resp != "" {
+			respHeaders = append(respHeaders, "Apple-Response: "+resp)
+		}
 	}
 
 	switch method {
@@ -302,13 +407,20 @@ func (s *Server) dispatchRTSP(conn net.Conn, method, uri string, headers map[str
 	case "ANNOUNCE":
 		s.parseSDP(string(body))
 	case "SETUP":
-		respHeaders = append(respHeaders, fmt.Sprintf("Transport: RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;server_port=%d;control_port=%d", s.rtpPort, s.rtpPort+1))
+		transportResp := fmt.Sprintf("RTP/AVP/UDP;unicast;mode=record;server_port=%d;control_port=%d;timing_port=%d",
+			s.rtpPort, s.ctrlPort, s.timingPort)
+		respHeaders = append(respHeaders, "Transport: "+transportResp)
 		respHeaders = append(respHeaders, "Session: 1")
-		respHeaders = append(respHeaders, "Audio-Jack-Status: connected")
+		respHeaders = append(respHeaders, "Audio-Jack-Status: connected; type=analog")
 	case "RECORD":
-		respHeaders = append(respHeaders, "Audio-Latency: 2205")
+		respHeaders = append(respHeaders, "Audio-Latency: 11025")
 		if s.OnPlay != nil {
-			go s.OnPlay()
+			go func() {
+				// Wait for audio data to start flowing
+				time.Sleep(800 * time.Millisecond)
+				log.Printf("[RTSP] Triggering OnPlay callback")
+				s.OnPlay()
+			}()
 		}
 	case "FLUSH", "PAUSE":
 		// Flush buffers
@@ -329,28 +441,40 @@ func (s *Server) parseSDP(sdp string) {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "a=rsaaeskey:") {
 			b64 := strings.TrimPrefix(line, "a=rsaaeskey:")
+			b64 = strings.ReplaceAll(b64, " ", "")
+			b64 = strings.ReplaceAll(b64, "\r", "")
+			for len(b64)%4 != 0 {
+				b64 += "="
+			}
 			encKey, err := base64.StdEncoding.DecodeString(b64)
 			if err == nil && s.rsaKey != nil {
-				key, err := rsa.DecryptPKCS1v15(rand.Reader, s.rsaKey, encKey)
+				// AirTunes encrypts the session AES key with RSA OAEP/SHA-1.
+				// PKCS#1 v1.5 decryption cannot decode keys produced by iOS/macOS.
+				key, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, s.rsaKey, encKey, nil)
 				if err == nil {
-				s.aesKey = key
-				log.Printf("[AirPlay] RSA AES key decoded successfully (%d bytes)", len(key))
+					s.aesKey = key
+					log.Printf("[AirPlay] RSA AES key decoded successfully (%d bytes)", len(key))
+				}
+			}
+		} else if strings.HasPrefix(line, "a=aesiv:") {
+			b64 := strings.TrimPrefix(line, "a=aesiv:")
+			b64 = strings.ReplaceAll(b64, " ", "")
+			b64 = strings.ReplaceAll(b64, "\r", "")
+			for len(b64)%4 != 0 {
+				b64 += "="
+			}
+			iv, err := base64.StdEncoding.DecodeString(b64)
+			if err == nil {
+				s.aesIV = iv
+				log.Printf("[AirPlay] AES IV decoded successfully (%d bytes)", len(iv))
+			}
+		} else if strings.HasPrefix(line, "a=fmtp:") {
+			parts := strings.Split(line, " ")
+			if len(parts) > 1 {
+				s.initALACDecoder(parts[1:])
 			}
 		}
-	} else if strings.HasPrefix(line, "a=aesiv:") {
-		b64 := strings.TrimPrefix(line, "a=aesiv:")
-		iv, err := base64.StdEncoding.DecodeString(b64)
-		if err == nil {
-			s.aesIV = iv
-			log.Printf("[AirPlay] AES IV decoded successfully (%d bytes)", len(iv))
-		}
-	} else if strings.HasPrefix(line, "a=fmtp:") {
-		parts := strings.Split(line, " ")
-		if len(parts) > 1 {
-			s.initALACDecoder(parts[1:])
-		}
 	}
-}
 }
 
 func (s *Server) initALACDecoder(params []string) {
@@ -385,6 +509,7 @@ func (s *Server) initALACDecoder(params []string) {
 
 func (s *Server) handleUDPPackets() {
 	buf := make([]byte, 4096)
+	pktCount := 0
 	for {
 		n, _, err := s.serverUDP.ReadFrom(buf)
 		if err != nil || n < 12 {
@@ -396,12 +521,22 @@ func (s *Server) handleUDPPackets() {
 			continue
 		}
 
+		pktCount++
+		if pktCount == 1 {
+			log.Printf("[RTP] First audio packet received (%d bytes payload)", len(payload))
+		} else if pktCount%500 == 0 {
+			log.Printf("[RTP] Received %d audio packets", pktCount)
+		}
+
 		if len(s.aesKey) == 16 && len(s.aesIV) == 16 {
 			block, err := aes.NewCipher(s.aesKey)
 			if err == nil {
 				alignedLen := (len(payload) / 16) * 16
 				if alignedLen > 0 {
-					mode := cipher.NewCBCDecrypter(block, s.aesIV)
+					// Fresh IV copy each time - CBC modifies IV in place
+					iv := make([]byte, 16)
+					copy(iv, s.aesIV)
+					mode := cipher.NewCBCDecrypter(block, iv)
 					mode.CryptBlocks(payload[:alignedLen], payload[:alignedLen])
 				}
 			}
@@ -409,9 +544,67 @@ func (s *Server) handleUDPPackets() {
 
 		if s.alacDec != nil {
 			pcm, err := s.alacDec.Decode(payload)
-			if err == nil && len(pcm) > 0 {
+			if err != nil {
+				if pktCount <= 5 {
+					log.Printf("[ALAC] Decode error on packet %d: %v", pktCount, err)
+				}
+				continue
+			}
+			if len(pcm) > 0 {
+				if pktCount == 1 {
+					log.Printf("[ALAC] First decoded frame: %d bytes PCM", len(pcm))
+				}
 				s.Hub.Broadcast(pcm)
 			}
+		} else {
+			// No ALAC decoder - broadcast raw
+			s.Hub.Broadcast(payload)
+		}
+	}
+}
+
+func (s *Server) handleControlPackets() {
+	buf := make([]byte, 1500)
+	for {
+		if s.controlUDP == nil {
+			break
+		}
+		n, addr, err := s.controlUDP.ReadFrom(buf)
+		if err != nil || n < 4 {
+			continue
+		}
+		_ = addr
+	}
+}
+
+func (s *Server) handleTimingPackets() {
+	buf := make([]byte, 256)
+	for {
+		if s.timingUDP == nil {
+			break
+		}
+		n, addr, err := s.timingUDP.ReadFrom(buf)
+		if err != nil || n < 32 {
+			continue
+		}
+
+		ptype := buf[1] & 0x7F
+		if ptype == 0x52 {
+			now := time.Now().UnixNano()
+			sec := uint32(now/1e9 + ntpEpochOffset)
+			frac := uint32((float64(now%1e9) / 1e9) * 4294967296.0)
+
+			resp := make([]byte, 32)
+			resp[0] = 0x80
+			resp[1] = 0xD3
+			copy(resp[2:4], buf[2:4])
+			copy(resp[4:12], buf[24:32])
+			binary.BigEndian.PutUint32(resp[12:16], sec)
+			binary.BigEndian.PutUint32(resp[16:20], frac)
+			binary.BigEndian.PutUint32(resp[20:24], sec)
+			binary.BigEndian.PutUint32(resp[24:28], frac)
+
+			s.timingUDP.WriteTo(resp, addr)
 		}
 	}
 }

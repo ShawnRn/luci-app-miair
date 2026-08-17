@@ -15,10 +15,13 @@ end
 function action_status()
 	local running = (luci.sys.call("pidof miair-core >/dev/null") == 0)
 	local has_token = nixio.fs.access("/etc/miair/token.json")
+	local version = nixio.fs.readfile("/usr/share/miair/version") or "development"
+	version = string.gsub(version, "^%s*(.-)%s*$", "%1")
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 		running = running,
-		has_token = has_token
+		has_token = has_token,
+		version = version
 	})
 end
 
@@ -113,4 +116,3 @@ function action_get_devices()
 		http.write_json({ code = 0, devices = devices })
 	end
 end
-

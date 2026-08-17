@@ -1,4 +1,7 @@
 core/miair-core
 .DS_Store
 *.ipk
+*.apk
+*.bak
+/dist/
 /tmp

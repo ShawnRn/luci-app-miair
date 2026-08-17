@@ -14,17 +14,20 @@ import (
 	"miair-core/miservice"
 )
 
+var version = "development"
+
 var (
-	flagDevice = flag.String("device", "", "Device ID (did) of XiaoAi speaker")
-	flagName   = flag.String("name", "XiaoAi AirPlay", "AirPlay device name")
-	flagPort   = flag.Int("port", 5000, "AirPlay RTSP port")
-	flagHTTP   = flag.Int("http-port", 8300, "Local HTTP audio stream port")
-	flagUser   = flag.String("user", "", "Mi Account Username")
-	flagPass   = flag.String("pass", "", "Mi Account Password")
-	flagStore  = flag.String("store", "/etc/miair/token.json", "Token store path")
-	flagList   = flag.Bool("list", false, "List XiaoAi devices in account")
-	flagQR     = flag.Bool("qr", false, "Start QR login flow")
-	flagPollQR = flag.String("poll-qr", "", "Poll QR login lp url")
+	flagDevice  = flag.String("device", "", "Device ID (did) of XiaoAi speaker")
+	flagName    = flag.String("name", "XiaoAi AirPlay", "AirPlay device name")
+	flagPort    = flag.Int("port", 5000, "AirPlay RTSP port")
+	flagHTTP    = flag.Int("http-port", 8300, "Local HTTP audio stream port")
+	flagUser    = flag.String("user", "", "Mi Account Username")
+	flagPass    = flag.String("pass", "", "Mi Account Password")
+	flagStore   = flag.String("store", "/etc/miair/token.json", "Token store path")
+	flagList    = flag.Bool("list", false, "List XiaoAi devices in account")
+	flagQR      = flag.Bool("qr", false, "Start QR login flow")
+	flagPollQR  = flag.String("poll-qr", "", "Poll QR login lp url")
+	flagVersion = flag.Bool("version", false, "Print version and exit")
 )
 
 func getLocalIP() string {
@@ -32,18 +35,36 @@ func getLocalIP() string {
 	if err != nil {
 		return "127.0.0.1"
 	}
+	// Prefer LAN bridge IP (192.168.x.x or 10.x.x.x) over WAN
+	var fallback string
 	for _, addr := range addrs {
 		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				ipStr := ip4.String()
+				if ip4[0] == 192 && ip4[1] == 168 {
+					return ipStr
+				}
+				if ip4[0] == 10 {
+					return ipStr
+				}
+				if fallback == "" {
+					fallback = ipStr
+				}
 			}
 		}
 	}
-	return "127.0.0.1"
+	if fallback != "" {
+		return fallback
+	}
+	return "192.168.10.1"
 }
 
 func main() {
 	flag.Parse()
+	if *flagVersion {
+		fmt.Printf("miair-core %s\n", version)
+		return
+	}
 
 	// 1. QR Code initialization
 	if *flagQR {
@@ -118,12 +139,20 @@ func main() {
 		if targetDID != "" {
 			go func() {
 				log.Printf("Instructing XiaoAi [%s] to play stream...", targetDID)
-				err := account.PlayByMusicURL(targetDID, streamURL)
-				if err != nil {
-					log.Printf("Error triggering XiaoAi playback: %v", err)
-				} else {
-					log.Println("XiaoAi playback triggered successfully!")
+				// Retry up to 3 times with increasing delay
+				for attempt := 1; attempt <= 3; attempt++ {
+					err := account.PlayByMusicURL(targetDID, streamURL)
+					if err != nil {
+						log.Printf("Attempt %d: XiaoAi playback error: %v", attempt, err)
+						if attempt < 3 {
+							time.Sleep(time.Duration(attempt) * time.Second)
+						}
+						continue
+					}
+					log.Printf("XiaoAi playback triggered successfully on attempt %d!", attempt)
+					return
 				}
+				log.Println("All playback attempts failed!")
 			}()
 		}
 	}
@@ -143,7 +172,7 @@ func main() {
 		log.Fatalf("Failed to start AirPlay server: %v", err)
 	}
 
-	log.Printf("=== miair-core started: %s (AirPlay port %d, HTTP stream port %d) ===", *flagName, *flagPort, *flagHTTP)
+	log.Printf("=== miair-core %s started: %s (AirPlay port %d, HTTP stream port %d) ===", version, *flagName, *flagPort, *flagHTTP)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -152,4 +181,3 @@ func main() {
 	log.Println("Shutting down miair-core...")
 	time.Sleep(500 * time.Millisecond)
 }
-

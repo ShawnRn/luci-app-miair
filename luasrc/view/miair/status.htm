@@ -16,6 +16,14 @@
 	border-radius: 6px;
 	text-align: center;
 }
+.miair-project-meta {
+	margin: 12px 0 4px;
+	text-align: right;
+	font-size: 12px;
+	color: #888;
+}
+.miair-project-meta a { color: #5e9ea0; text-decoration: none; }
+.miair-project-meta a:hover { text-decoration: underline; }
 </style>
 
 <fieldset class="cbi-section">
@@ -44,6 +52,14 @@
 	</div>
 </fieldset>
 
+<div class="miair-project-meta">
+	<span><%:MiAir%> <span id="miair_version">development</span></span>
+	<span style="margin: 0 6px;">·</span>
+	<span><%:作者%> Shawn Rain</span>
+	<span style="margin: 0 6px;">·</span>
+	<a href="https://github.com/ShawnRn/luci-app-miair" target="_blank" rel="noopener noreferrer">GitHub</a>
+</div>
+
 <script type="text/javascript">//<![CDATA[
 var pollTimer = null;
 var pollCount = 0;
@@ -52,7 +68,9 @@ XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status"
 	function(x, data) {
 		var badge = document.getElementById('miair_status_badge');
 		var tokenBadge = document.getElementById('miair_token_badge');
+		var version = document.getElementById('miair_version');
 		if (data && badge) {
+			if (version && data.version) version.innerHTML = 'v' + data.version;
 			if (data.running) {
 				badge.className = 'miair-status-badge miair-running';
 				badge.innerHTML = '<%:运行中 (AirPlay 广播正常)%>';
@@ -144,4 +162,3 @@ function fetchDevices() {
 	);
 }
 //]]></script>
-

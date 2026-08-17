@@ -1,0 +1,111 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: miair-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential fakeroot meson ninja-build pkg-config shellcheck \
+            libssl-dev zlib1g-dev libzstd-dev
+
+      - name: Build apk-tools v3
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v3.0.3 \
+            https://gitlab.alpinelinux.org/alpine/apk-tools.git /tmp/apk-tools
+          meson setup \
+            -Ddocs=disabled \
+            -Dlua=disabled \
+            -Dpython=disabled \
+            -Dtests=disabled \
+            -Dzstd=enabled \
+            -Dcrypto_backend=openssl \
+            /tmp/apk-tools/build /tmp/apk-tools
+          ninja -C /tmp/apk-tools/build src/apk
+          /tmp/apk-tools/build/src/apk --version
+
+      - name: Test source and scripts
+        run: |
+          set -euo pipefail
+          (cd core && go test -race ./...)
+          shellcheck scripts/build-packages.sh
+          test "$(tr -d '[:space:]' < VERSION)" = "${GITHUB_REF_NAME#v}" || \
+            { echo "Tag and VERSION do not match" >&2; exit 1; }
+        if: startsWith(github.ref, 'refs/tags/')
+
+      - name: Test source and scripts (manual run)
+        run: |
+          set -euo pipefail
+          (cd core && go test -race ./...)
+          shellcheck scripts/build-packages.sh
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build IPK and APK
+        env:
+          APK: /tmp/apk-tools/build/src/apk
+        run: scripts/build-packages.sh
+
+      - name: Verify packages
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          ipk="dist/luci-app-miair_${version}-1_aarch64_cortex-a53.ipk"
+          apk="dist/luci-app-miair-${version}-r1.aarch64_cortex-a53.apk"
+
+          test "$(ar t "$ipk" | tr '\n' ' ')" = \
+            "debian-binary control.tar.gz data.tar.gz "
+          work="$(mktemp -d)"
+          (cd "$work" && ar x "$GITHUB_WORKSPACE/$ipk")
+          test "$(cat "$work/debian-binary")" = "2.0"
+          tar -tzf "$work/control.tar.gz" | grep -qx './control'
+          tar -tzf "$work/data.tar.gz" | grep -qx './usr/bin/miair-core'
+          tar -tvzf "$work/data.tar.gz" | grep -q 'root/root'
+
+          /tmp/apk-tools/build/src/apk adbdump --format yaml "$apk" > /tmp/miair-apk.yml
+          grep -q 'name: luci-app-miair' /tmp/miair-apk.yml
+          grep -q "version: ${version}-r1" /tmp/miair-apk.yml
+          grep -q 'user: root' /tmp/miair-apk.yml
+          grep -q 'group: root' /tmp/miair-apk.yml
+          sha256sum --check dist/SHA256SUMS
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-miair-${{ github.ref_name }}-aarch64
+          path: dist/*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MiAir ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.ipk
+            dist/*.apk
+            dist/SHA256SUMS
