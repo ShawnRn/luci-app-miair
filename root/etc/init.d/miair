@@ -8,18 +8,17 @@ PROG=/usr/bin/miair-core
 CONF=miair
 
 start_service() {
-	local enabled name account password did port http_port store
+	local enabled name did port http_port buffer_ms store
 
 	config_load "$CONF"
 	config_get_bool enabled "config" "enabled" 0
 	[ "$enabled" -eq 1 ] || return 0
 
 	config_get name "config" "name" "小爱音箱 AirPlay"
-	config_get account "config" "account" ""
-	config_get password "config" "password" ""
 	config_get did "config" "did" ""
 	config_get port "config" "port" "5000"
 	config_get http_port "config" "http_port" "8300"
+	config_get buffer_ms "config" "buffer_ms" "1500"
 	config_get store "config" "mi_token_store" "/etc/miair/token.json"
 
 	mkdir -p /etc/miair /var/run /var/log
@@ -29,9 +28,8 @@ start_service() {
 	procd_append_param command -name "$name"
 	procd_append_param command -port "$port"
 	procd_append_param command -http-port "$http_port"
+	procd_append_param command -buffer-ms "$buffer_ms"
 	procd_append_param command -store "$store"
-	[ -n "$account" ] && procd_append_param command -user "$account"
-	[ -n "$password" ] && procd_append_param command -pass "$password"
 	[ -n "$did" ] && procd_append_param command -device "$did"
 
 	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
@@ -44,4 +42,3 @@ start_service() {
 service_triggers() {
 	procd_add_reload_trigger "$CONF"
 }
-

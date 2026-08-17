@@ -34,21 +34,33 @@ var airportPrivateKeyPEM = func() string {
 const ntpEpochOffset = 2208988800
 
 type AudioStreamHub struct {
-	mu        sync.Mutex
-	listeners map[chan []byte]bool
+	mu              sync.Mutex
+	listeners       map[chan []byte]bool
+	history         [][]byte
+	historyBytes    int
+	maxHistoryBytes int
 }
 
-func NewAudioStreamHub() *AudioStreamHub {
+func NewAudioStreamHub(bufferMillis int) *AudioStreamHub {
+	if bufferMillis < 0 {
+		bufferMillis = 0
+	}
 	return &AudioStreamHub{
-		listeners: make(map[chan []byte]bool),
+		listeners:       make(map[chan []byte]bool),
+		maxHistoryBytes: 44100 * 2 * 2 * bufferMillis / 1000,
 	}
 }
 
 func (h *AudioStreamHub) Subscribe() chan []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ch := make(chan []byte, 100)
+	// Size the listener queue to hold the complete pre-buffer plus enough room
+	// for live frames while the HTTP writer catches up.
+	ch := make(chan []byte, len(h.history)+128)
 	h.listeners[ch] = true
+	for _, frame := range h.history {
+		ch <- frame
+	}
 	return ch
 }
 
@@ -64,6 +76,16 @@ func (h *AudioStreamHub) Unsubscribe(ch chan []byte) {
 func (h *AudioStreamHub) Broadcast(data []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.maxHistoryBytes > 0 {
+		frame := append([]byte(nil), data...)
+		h.history = append(h.history, frame)
+		h.historyBytes += len(frame)
+		for h.historyBytes > h.maxHistoryBytes && len(h.history) > 0 {
+			h.historyBytes -= len(h.history[0])
+			h.history[0] = nil
+			h.history = h.history[1:]
+		}
+	}
 	for ch := range h.listeners {
 		select {
 		case ch <- data:
@@ -96,7 +118,7 @@ type Server struct {
 	macBytes   []byte
 }
 
-func NewServer(name string, port int, httpPort int, streamPath string) (*Server, error) {
+func NewServer(name string, port int, httpPort int, streamPath string, bufferMillis int) (*Server, error) {
 	block, _ := pem.Decode([]byte(airportPrivateKeyPEM))
 	if block == nil {
 		return nil, fmt.Errorf("failed to parse PEM block")
@@ -121,7 +143,7 @@ func NewServer(name string, port int, httpPort int, streamPath string) (*Server,
 		Port:       port,
 		HTTPPort:   httpPort,
 		StreamPath: streamPath,
-		Hub:        NewAudioStreamHub(),
+		Hub:        NewAudioStreamHub(bufferMillis),
 		rsaKey:     privKey,
 		macBytes:   mac,
 	}, nil

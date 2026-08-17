@@ -85,13 +85,11 @@ end
 function action_get_devices()
 	local http = require "luci.http"
 	local uci = require("luci.model.uci").cursor()
-	local user = http.formvalue("user") or uci:get("miair", "config", "account") or ""
-	local pass = http.formvalue("pass") or uci:get("miair", "config", "password") or ""
 	local store = uci:get("miair", "config", "mi_token_store") or "/etc/miair/token.json"
 
 	http.prepare_content("application/json")
 
-	local cmd = string.format('/usr/bin/miair-core -list -user "%s" -pass "%s" -store "%s" 2>&1', user, pass, store)
+	local cmd = string.format('/usr/bin/miair-core -list -store "%s" 2>&1', store)
 	local handle = io.popen(cmd)
 	local result = handle:read("*a")
 	handle:close()

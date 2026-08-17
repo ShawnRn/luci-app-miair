@@ -21,8 +21,7 @@ var (
 	flagName    = flag.String("name", "XiaoAi AirPlay", "AirPlay device name")
 	flagPort    = flag.Int("port", 5000, "AirPlay RTSP port")
 	flagHTTP    = flag.Int("http-port", 8300, "Local HTTP audio stream port")
-	flagUser    = flag.String("user", "", "Mi Account Username")
-	flagPass    = flag.String("pass", "", "Mi Account Password")
+	flagBuffer  = flag.Int("buffer-ms", 1500, "Audio pre-buffer duration in milliseconds (0-5000)")
 	flagStore   = flag.String("store", "/etc/miair/token.json", "Token store path")
 	flagList    = flag.Bool("list", false, "List XiaoAi devices in account")
 	flagQR      = flag.Bool("qr", false, "Start QR login flow")
@@ -65,6 +64,9 @@ func main() {
 		fmt.Printf("miair-core %s\n", version)
 		return
 	}
+	if *flagBuffer < 0 || *flagBuffer > 5000 {
+		log.Fatalf("buffer-ms must be between 0 and 5000")
+	}
 
 	// 1. QR Code initialization
 	if *flagQR {
@@ -95,9 +97,6 @@ func main() {
 	// 3. List XiaoAi devices
 	if *flagList {
 		account := miservice.NewAccount(*flagStore)
-		if *flagUser != "" && *flagPass != "" && account.Data.PassToken == "" {
-		}
-
 		devs, err := account.DeviceList(0)
 		if err != nil {
 			log.Fatalf("Failed to get devices: %v", err)
@@ -111,8 +110,6 @@ func main() {
 
 	// 4. Runtime Mode
 	account := miservice.NewAccount(*flagStore)
-	if *flagUser != "" && *flagPass != "" && account.Data.PassToken == "" {
-	}
 
 	targetDID := *flagDevice
 	if targetDID == "" {
@@ -129,7 +126,7 @@ func main() {
 	localIP := getLocalIP()
 	streamURL := fmt.Sprintf("http://%s:%d/stream.wav", localIP, *flagHTTP)
 
-	server, err := airplay.NewServer(*flagName, *flagPort, *flagHTTP, "/stream.wav")
+	server, err := airplay.NewServer(*flagName, *flagPort, *flagHTTP, "/stream.wav", *flagBuffer)
 	if err != nil {
 		log.Fatalf("Failed to create AirPlay server: %v", err)
 	}

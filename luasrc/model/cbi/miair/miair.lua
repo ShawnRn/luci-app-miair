@@ -27,17 +27,6 @@ o = s:option(Value, "did", translate("小爱音箱 Device ID (DID)"))
 o.description = translate("指定绑定的小爱音箱 DID。点击上方【扫码授权登录】或【刷新/自动识别】可自动填充；若留空，插件启动时将自动绑定名下第一个音箱。")
 o.rmempty = true
 
-s_acc = m:section(NamedSection, "config", "miair", translate("账号密码备选（推荐直接使用上方扫码登录）"))
-s_acc.anonymous = true
-s_acc.addremove = false
-
-o = s_acc:option(Value, "account", translate("小米账号 (手机号/小米ID)"))
-o.rmempty = true
-
-o = s_acc:option(Value, "password", translate("小米密码"))
-o.password = true
-o.rmempty = true
-
 s_adv = m:section(NamedSection, "config", "miair", translate("高级参数"))
 s_adv.anonymous = true
 s_adv.addremove = false
@@ -47,10 +36,15 @@ o.default = "5000"
 o.datatype = "port"
 o.rmempty = false
 
+o = s_adv:option(Value, "buffer_ms", translate("音频预缓冲（毫秒）"))
+o.default = "1500"
+o.datatype = "range(0,5000)"
+o.description = translate("保留最近一段 PCM 音频，供小爱音箱连接后补发，减少开头丢失。0 表示关闭；输出固定为 44.1 kHz / 16-bit / 双声道 PCM（约 1411 kbps）。")
+o.rmempty = false
+
 o = s_adv:option(Value, "http_port", translate("HTTP 音频流中转端口"))
 o.default = "8300"
 o.datatype = "port"
 o.rmempty = false
 
 return m
-

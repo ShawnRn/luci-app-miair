@@ -12,7 +12,7 @@ import (
 )
 
 func TestComputeAppleResponsePayload(t *testing.T) {
-	s, err := NewServer("test", 5000, 8300, "/stream.wav")
+	s, err := NewServer("test", 5000, 8300, "/stream.wav", 1500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestComputeAppleResponsePayload(t *testing.T) {
 }
 
 func TestComputeAppleResponsePayloadIPv6(t *testing.T) {
-	s, err := NewServer("test", 5000, 8300, "/stream.wav")
+	s, err := NewServer("test", 5000, 8300, "/stream.wav", 1500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestComputeAppleResponsePayloadIPv6(t *testing.T) {
 }
 
 func TestParseSDPDecryptsOAEPKey(t *testing.T) {
-	s, err := NewServer("test", 5000, 8300, "/stream.wav")
+	s, err := NewServer("test", 5000, 8300, "/stream.wav", 1500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +99,20 @@ func TestParseSDPDecryptsOAEPKey(t *testing.T) {
 	s.parseSDP("a=rsaaeskey:" + base64.RawStdEncoding.EncodeToString(encrypted))
 	if !bytes.Equal(s.aesKey, want) {
 		t.Fatalf("AES key = %x, want %x", s.aesKey, want)
+	}
+}
+
+func TestAudioStreamHubPrebuffersAudio(t *testing.T) {
+	hub := NewAudioStreamHub(1000)
+	first := bytes.Repeat([]byte{0x11}, 100000)
+	second := bytes.Repeat([]byte{0x22}, 100000)
+	hub.Broadcast(first)
+	hub.Broadcast(second)
+
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	got := <-ch
+	if !bytes.Equal(got, second) {
+		t.Fatalf("prebuffer retained %d bytes with prefix %x; want latest frame", len(got), got[:1])
 	}
 }
