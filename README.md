@@ -16,6 +16,10 @@
 - **固定无损 PCM 输出**：44.1 kHz / 16-bit / 双声道，约 1411 kbps，无需额外转码依赖。
 - **原生 LuCI 界面**：完美适配 OpenWrt / QWRT 路由器 Web 管理界面。
 
+### 致谢
+
+本项目的创意与小爱音箱桥接工作流参考了 [KiriChen-Wind/MiAir](https://github.com/KiriChen-Wind/MiAir)。感谢原作者与相关开源项目贡献者的探索和分享。
+
 ### 目录结构
 - `core/`: Go 编写的核心守护进程源码与交叉编译脚本。
 - `luasrc/`: LuCI 控制器与 CBI 模型界面。
