@@ -18,7 +18,12 @@
 
 ### 致谢
 
-本项目的创意与小爱音箱桥接工作流参考了 [KiriChen-Wind/MiAir](https://github.com/KiriChen-Wind/MiAir)。感谢原作者与相关开源项目贡献者的探索和分享。
+本项目的创意、小爱音箱桥接工作流与管理界面设计参考了以下项目：
+
+- [KiriChen-Wind/MiAir](https://github.com/KiriChen-Wind/MiAir)
+- [deerwan/miair-next](https://github.com/deerwan/miair-next)
+
+感谢原作者与相关开源项目贡献者的探索和分享。
 
 ### 目录结构
 - `core/`: Go 编写的核心守护进程源码与交叉编译脚本。
