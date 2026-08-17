@@ -128,7 +128,7 @@ if [ -n "${APK:-}" ]; then
 set -eu
 chown -R 0:0 "$ROOT"
 exec "$APK" mkpkg \
-	--xattrs=false \
+	--xattrs=no \
 	--info "name:$PACKAGE" \
 	--info "version:$VERSION-r$RELEASE" \
 	--info "description:MiAir bridge for streaming AirPlay audio to Xiaomi speakers" \
