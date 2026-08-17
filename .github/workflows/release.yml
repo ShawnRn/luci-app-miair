@@ -82,9 +82,12 @@ jobs:
           work="$(mktemp -d)"
           (cd "$work" && ar x "$GITHUB_WORKSPACE/$ipk")
           test "$(cat "$work/debian-binary")" = "2.0"
-          tar -tzf "$work/control.tar.gz" | grep -qx './control'
-          tar -tzf "$work/data.tar.gz" | grep -qx './usr/bin/miair-core'
-          tar -tvzf "$work/data.tar.gz" | grep -q 'root/root'
+          tar -tzf "$work/control.tar.gz" > /tmp/miair-control-files.txt
+          tar -tzf "$work/data.tar.gz" > /tmp/miair-data-files.txt
+          tar -tvzf "$work/data.tar.gz" > /tmp/miair-data-details.txt
+          grep -qx './control' /tmp/miair-control-files.txt
+          grep -qx './usr/bin/miair-core' /tmp/miair-data-files.txt
+          grep -q 'root/root' /tmp/miair-data-details.txt
 
           /tmp/apk-tools/build/src/apk adbdump --format yaml "$apk" > /tmp/miair-apk.yml
           grep -q 'name: luci-app-miair' /tmp/miair-apk.yml
