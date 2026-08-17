@@ -77,10 +77,10 @@ jobs:
           ipk="dist/luci-app-miair_${version}-1_aarch64_cortex-a53.ipk"
           apk="dist/luci-app-miair-${version}-r1.aarch64_cortex-a53.apk"
 
-          test "$(ar t "$ipk" | tr '\n' ' ')" = \
-            "debian-binary control.tar.gz data.tar.gz "
+          test "$(tar -tzf "$ipk" | tr '\n' ' ')" = \
+            "./debian-binary ./data.tar.gz ./control.tar.gz "
           work="$(mktemp -d)"
-          (cd "$work" && ar x "$GITHUB_WORKSPACE/$ipk")
+          tar -xzf "$ipk" -C "$work"
           test "$(cat "$work/debian-binary")" = "2.0"
           tar -tzf "$work/control.tar.gz" > /tmp/miair-control-files.txt
           tar -tzf "$work/data.tar.gz" > /tmp/miair-data-files.txt

@@ -15,14 +15,6 @@ if ! command -v fakeroot >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [ -n "${AR:-}" ]; then
-	AR_TOOL=$AR
-elif command -v gar >/dev/null 2>&1; then
-	AR_TOOL=$(command -v gar)
-else
-	AR_TOOL=$(command -v ar)
-fi
-
 cleanup() {
 	rm -rf "$BUILD_DIR"
 }
@@ -106,18 +98,19 @@ chmod 0755 "$CONTROL/postinst" "$CONTROL/prerm"
 
 IPK="$OUTPUT_DIR/${PACKAGE}_${VERSION}-${RELEASE}_${ARCH_IPK}.ipk"
 printf '2.0\n' > "$BUILD_DIR/debian-binary"
+IPK="$OUTPUT_DIR/${PACKAGE}_${VERSION}-${RELEASE}_${ARCH_IPK}.ipk"
+rm -f "$IPK"
 cat > "$BUILD_DIR/make-tars.sh" <<'EOF'
 #!/bin/sh
 set -eu
-chown -R 0:0 "$CONTROL" "$ROOT"
+chown -R 0:0 "$CONTROL" "$ROOT" "$BUILD_DIR/debian-binary"
 (cd "$CONTROL" && tar -czf "$BUILD_DIR/control.tar.gz" .)
 (cd "$ROOT" && tar -czf "$BUILD_DIR/data.tar.gz" .)
+(cd "$BUILD_DIR" && tar -czf "$IPK" ./debian-binary ./data.tar.gz ./control.tar.gz)
 EOF
 chmod 0755 "$BUILD_DIR/make-tars.sh"
-export CONTROL ROOT BUILD_DIR
+export CONTROL ROOT BUILD_DIR IPK
 fakeroot "$BUILD_DIR/make-tars.sh"
-rm -f "$IPK"
-(cd "$BUILD_DIR" && "$AR_TOOL" -rc "$IPK" debian-binary control.tar.gz data.tar.gz)
 echo "Created $IPK"
 
 if [ -n "${APK:-}" ]; then
