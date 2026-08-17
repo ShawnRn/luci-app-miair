@@ -7,26 +7,37 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"miair-core/airplay"
+	"miair-core/dlna"
 	"miair-core/miservice"
+	"miair-core/playback"
+	"miair-core/source"
 )
 
 var version = "development"
 
 var (
-	flagDevice  = flag.String("device", "", "Device ID (did) of XiaoAi speaker")
-	flagName    = flag.String("name", "XiaoAi AirPlay", "AirPlay device name")
-	flagPort    = flag.Int("port", 5000, "AirPlay RTSP port")
-	flagHTTP    = flag.Int("http-port", 8300, "Local HTTP audio stream port")
-	flagBuffer  = flag.Int("buffer-ms", 1500, "Audio pre-buffer duration in milliseconds (0-5000)")
-	flagStore   = flag.String("store", "/etc/miair/token.json", "Token store path")
-	flagList    = flag.Bool("list", false, "List XiaoAi devices in account")
-	flagQR      = flag.Bool("qr", false, "Start QR login flow")
-	flagPollQR  = flag.String("poll-qr", "", "Poll QR login lp url")
-	flagVersion = flag.Bool("version", false, "Print version and exit")
+	flagDevice    = flag.String("device", "", "Device ID (did) of XiaoAi speaker")
+	flagName      = flag.String("name", "XiaoAi AirPlay", "AirPlay device name")
+	flagAirPlay   = flag.Bool("airplay", true, "Enable the AirPlay receiver")
+	flagPort      = flag.Int("port", 5000, "AirPlay RTSP port")
+	flagHTTP      = flag.Int("http-port", 8300, "Local HTTP audio stream port")
+	flagBuffer    = flag.Int("buffer-ms", 1500, "Audio pre-buffer duration in milliseconds (0-5000)")
+	flagDLNA      = flag.Bool("dlna", true, "Enable the DLNA/UPnP MediaRenderer")
+	flagDLNAPort  = flag.Int("dlna-port", 8301, "DLNA HTTP control and media proxy port")
+	flagPolicy    = flag.String("source-policy", "latest", "Source policy: latest, lock, idle, or priority")
+	flagIdle      = flag.Int("idle-timeout", 10, "Seconds before an inactive source may be preempted")
+	flagPreferred = flag.String("preferred-protocol", "airplay", "Preferred protocol for priority policy: airplay or dlna")
+	flagStatus    = flag.String("status-file", "/var/run/miair-status.json", "Runtime status JSON path")
+	flagStore     = flag.String("store", "/etc/miair/token.json", "Token store path")
+	flagList      = flag.Bool("list", false, "List XiaoAi devices in account")
+	flagQR        = flag.Bool("qr", false, "Start QR login flow")
+	flagPollQR    = flag.String("poll-qr", "", "Poll QR login lp url")
+	flagVersion   = flag.Bool("version", false, "Print version and exit")
 )
 
 func getLocalIP() string {
@@ -66,6 +77,12 @@ func main() {
 	}
 	if *flagBuffer < 0 || *flagBuffer > 5000 {
 		log.Fatalf("buffer-ms must be between 0 and 5000")
+	}
+	if !*flagAirPlay && !*flagDLNA {
+		log.Fatalf("at least one receiver protocol must be enabled")
+	}
+	if *flagIdle < 1 || *flagIdle > 3600 {
+		log.Fatalf("idle-timeout must be between 1 and 3600 seconds")
 	}
 
 	// 1. QR Code initialization
@@ -123,53 +140,68 @@ func main() {
 		}
 	}
 
+	policy, err := source.ParsePolicy(*flagPolicy)
+	if err != nil {
+		log.Fatal(err)
+	}
+	preferred := source.Protocol(strings.ToLower(strings.TrimSpace(*flagPreferred)))
+	if preferred != source.ProtocolAirPlay && preferred != source.ProtocolDLNA {
+		log.Fatalf("preferred-protocol must be airplay or dlna")
+	}
+	manager := source.NewManager(policy, time.Duration(*flagIdle)*time.Second, preferred)
+	coordinator := playback.NewCoordinator(manager, account, targetDID, *flagStatus)
+	defer coordinator.Close()
+
 	localIP := getLocalIP()
-	streamURL := fmt.Sprintf("http://%s:%d/stream.wav", localIP, *flagHTTP)
-
-	server, err := airplay.NewServer(*flagName, *flagPort, *flagHTTP, "/stream.wav", *flagBuffer)
-	if err != nil {
-		log.Fatalf("Failed to create AirPlay server: %v", err)
-	}
-
-	server.OnPlay = func() {
-		log.Printf("AirPlay streaming started! Stream URL: %s", streamURL)
-		if targetDID != "" {
-			go func() {
-				log.Printf("Instructing XiaoAi [%s] to play stream...", targetDID)
-				// Retry up to 3 times with increasing delay
-				for attempt := 1; attempt <= 3; attempt++ {
-					err := account.PlayByMusicURL(targetDID, streamURL)
-					if err != nil {
-						log.Printf("Attempt %d: XiaoAi playback error: %v", attempt, err)
-						if attempt < 3 {
-							time.Sleep(time.Duration(attempt) * time.Second)
-						}
-						continue
-					}
-					log.Printf("XiaoAi playback triggered successfully on attempt %d!", attempt)
-					return
-				}
-				log.Println("All playback attempts failed!")
-			}()
+	var airplayServer *airplay.Server
+	if *flagAirPlay {
+		airplayServer, err = airplay.NewServer(*flagName, *flagPort, *flagHTTP, "/stream.wav", *flagBuffer)
+		if err != nil {
+			log.Fatalf("Failed to create AirPlay server: %v", err)
 		}
-	}
-
-	server.OnStop = func() {
-		log.Println("AirPlay streaming stopped.")
-		if targetDID != "" {
-			go func() {
-				log.Printf("Stopping XiaoAi [%s]...", targetDID)
-				_ = account.PlayerPause(targetDID)
-			}()
+		airplayServer.OnSessionStart = func(info airplay.SessionInfo) bool {
+			streamURL := fmt.Sprintf("http://%s:%d%s", localIP, *flagHTTP, info.StreamPath)
+			decision := coordinator.Activate(source.Request{
+				ID:        info.ID,
+				Protocol:  source.ProtocolAirPlay,
+				Device:    info.Device,
+				StreamURL: streamURL,
+				Cancel:    info.Cancel,
+			})
+			return decision.Granted
 		}
+		airplayServer.OnSessionStop = func(sessionID string) { coordinator.Deactivate(sessionID) }
+		airplayServer.OnSessionActivity = func(sessionID string) { coordinator.Touch(sessionID) }
+		airplayServer.OnVolume = func(sessionID string, volume int) { coordinator.SetVolume(sessionID, volume) }
+		if err = airplayServer.Start(); err != nil {
+			log.Fatalf("Failed to start AirPlay server: %v", err)
+		}
+		defer airplayServer.Close()
 	}
 
-	err = server.Start()
-	if err != nil {
-		log.Fatalf("Failed to start AirPlay server: %v", err)
+	var dlnaServer *dlna.Server
+	if *flagDLNA {
+		dlnaServer = dlna.NewServer(*flagName, localIP, *flagDLNAPort)
+		dlnaServer.OnSessionStart = func(info dlna.SessionInfo) bool {
+			decision := coordinator.Activate(source.Request{
+				ID:        info.ID,
+				Protocol:  source.ProtocolDLNA,
+				Device:    info.Device,
+				StreamURL: info.StreamURL,
+				Cancel:    info.Cancel,
+			})
+			return decision.Granted
+		}
+		dlnaServer.OnSessionStop = func(sessionID string) { coordinator.Deactivate(sessionID) }
+		dlnaServer.OnSessionActivity = func(sessionID string) { coordinator.Touch(sessionID) }
+		dlnaServer.OnVolume = func(sessionID string, volume int) { coordinator.SetVolume(sessionID, volume) }
+		if err = dlnaServer.Start(); err != nil {
+			log.Fatalf("Failed to start DLNA server: %v", err)
+		}
+		defer dlnaServer.Close()
 	}
 
-	log.Printf("=== miair-core %s started: %s (AirPlay port %d, HTTP stream port %d) ===", version, *flagName, *flagPort, *flagHTTP)
+	log.Printf("=== miair-core %s started: %s (AirPlay=%t, DLNA=%t, source policy=%s) ===", version, *flagName, *flagAirPlay, *flagDLNA, policy)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

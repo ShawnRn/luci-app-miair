@@ -335,10 +335,10 @@ func (a *Account) RequestMina(uri string, form url.Values) ([]byte, error) {
 func (a *Account) PlayByMusicURL(deviceID, streamURL string) error {
 	data := url.Values{}
 	data.Set("deviceId", deviceID)
-	
+
 	msgJSON, _ := json.Marshal(map[string]interface{}{
-		"url": streamURL,
-		"type": 1,
+		"url":   streamURL,
+		"type":  1,
 		"media": "app_ios",
 	})
 	data.Set("message", string(msgJSON))
@@ -366,13 +366,53 @@ func (a *Account) PlayerPause(deviceID string) error {
 	data.Set("deviceId", deviceID)
 	msgJSON, _ := json.Marshal(map[string]interface{}{
 		"action": "pause",
-		"media": "app_ios",
+		"media":  "app_ios",
 	})
 	data.Set("message", string(msgJSON))
 	data.Set("method", "player_play_operation")
 	data.Set("path", "mediaplayer")
-	_, err := a.RequestMina("/remote/ubus", data)
-	return err
+	body, err := a.RequestMina("/remote/ubus", data)
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &res); err == nil && res.Code != 0 {
+		return fmt.Errorf("player_pause error (code %d): %s", res.Code, res.Message)
+	}
+	return nil
+}
+
+func (a *Account) PlayerSetVolume(deviceID string, volume int) error {
+	if volume < 0 {
+		volume = 0
+	}
+	if volume > 100 {
+		volume = 100
+	}
+	data := url.Values{}
+	data.Set("deviceId", deviceID)
+	msgJSON, _ := json.Marshal(map[string]interface{}{
+		"volume": volume,
+		"media":  "app_ios",
+	})
+	data.Set("message", string(msgJSON))
+	data.Set("method", "player_set_volume")
+	data.Set("path", "mediaplayer")
+	body, err := a.RequestMina("/remote/ubus", data)
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &res); err == nil && res.Code != 0 {
+		return fmt.Errorf("player_set_volume error (code %d): %s", res.Code, res.Message)
+	}
+	return nil
 }
 
 func (a *Account) PlayerStop(deviceID string) error {
@@ -380,7 +420,7 @@ func (a *Account) PlayerStop(deviceID string) error {
 	data.Set("deviceId", deviceID)
 	msgJSON, _ := json.Marshal(map[string]interface{}{
 		"action": "stop",
-		"media": "app_ios",
+		"media":  "app_ios",
 	})
 	data.Set("message", string(msgJSON))
 	data.Set("method", "player_play_operation")

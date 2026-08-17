@@ -14,12 +14,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/grandcat/zeroconf"
@@ -39,6 +41,7 @@ type AudioStreamHub struct {
 	history         [][]byte
 	historyBytes    int
 	maxHistoryBytes int
+	closed          bool
 }
 
 func NewAudioStreamHub(bufferMillis int) *AudioStreamHub {
@@ -54,6 +57,11 @@ func NewAudioStreamHub(bufferMillis int) *AudioStreamHub {
 func (h *AudioStreamHub) Subscribe() chan []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		ch := make(chan []byte)
+		close(ch)
+		return ch
+	}
 	// Size the listener queue to hold the complete pre-buffer plus enough room
 	// for live frames while the HTTP writer catches up.
 	ch := make(chan []byte, len(h.history)+128)
@@ -76,6 +84,9 @@ func (h *AudioStreamHub) Unsubscribe(ch chan []byte) {
 func (h *AudioStreamHub) Broadcast(data []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
 	if h.maxHistoryBytes > 0 {
 		frame := append([]byte(nil), data...)
 		h.history = append(h.history, frame)
@@ -94,28 +105,79 @@ func (h *AudioStreamHub) Broadcast(data []byte) {
 	}
 }
 
-type Server struct {
-	Name       string
-	Port       int
-	HTTPPort   int
-	StreamPath string
-	Hub        *AudioStreamHub
-	OnPlay     func()
-	OnStop     func()
+func (h *AudioStreamHub) Reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.history = nil
+	h.historyBytes = 0
+}
 
-	rsaKey  *rsa.PrivateKey
+func (h *AudioStreamHub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	h.history = nil
+	h.historyBytes = 0
+	for ch := range h.listeners {
+		delete(h.listeners, ch)
+		close(ch)
+	}
+}
+
+type SessionInfo struct {
+	ID         string
+	Device     string
+	StreamPath string
+	Cancel     func()
+}
+
+type Server struct {
+	Name         string
+	Port         int
+	HTTPPort     int
+	StreamPath   string
+	BufferMillis int
+
+	OnSessionStart    func(SessionInfo) bool
+	OnSessionStop     func(sessionID string)
+	OnSessionActivity func(sessionID string)
+	OnVolume          func(sessionID string, volume int)
+
+	rsaKey     *rsa.PrivateKey
+	mdnsServer *zeroconf.Server
+	macBytes   []byte
+
+	sessionsMu sync.RWMutex
+	sessions   map[string]*airplaySession
+	nextID     atomic.Uint64
+	rtspLn     net.Listener
+	httpServer *http.Server
+	httpLn     net.Listener
+}
+
+type airplaySession struct {
+	server *Server
+	id     string
+	device string
+	conn   net.Conn
+	hub    *AudioStreamHub
+
+	mu      sync.Mutex
 	aesKey  []byte
 	aesIV   []byte
 	alacDec *alac.Decoder
+	owned   bool
 
-	serverUDP  *net.UDPConn
+	rtpUDP     *net.UDPConn
 	rtpPort    int
 	controlUDP *net.UDPConn
 	ctrlPort   int
 	timingUDP  *net.UDPConn
 	timingPort int
-	mdnsServer *zeroconf.Server
-	macBytes   []byte
+	closeOnce  sync.Once
 }
 
 func NewServer(name string, port int, httpPort int, streamPath string, bufferMillis int) (*Server, error) {
@@ -139,48 +201,29 @@ func NewServer(name string, port int, httpPort int, streamPath string, bufferMil
 	}
 
 	return &Server{
-		Name:       name,
-		Port:       port,
-		HTTPPort:   httpPort,
-		StreamPath: streamPath,
-		Hub:        NewAudioStreamHub(bufferMillis),
-		rsaKey:     privKey,
-		macBytes:   mac,
+		Name:         name,
+		Port:         port,
+		HTTPPort:     httpPort,
+		StreamPath:   strings.TrimSuffix(streamPath, ".wav"),
+		BufferMillis: bufferMillis,
+		rsaKey:       privKey,
+		macBytes:     mac,
+		sessions:     make(map[string]*airplaySession),
 	}, nil
 }
 
 func (s *Server) Start() error {
-	go s.startHTTPServer()
+	if err := s.startHTTPServer(); err != nil {
+		return err
+	}
 
 	rtspLn, err := net.Listen("tcp", fmt.Sprintf(":%d", s.Port))
 	if err != nil {
+		_ = s.httpServer.Close()
 		return err
 	}
+	s.rtspLn = rtspLn
 	log.Printf("[AirPlay] RTSP Server listening on port %d", s.Port)
-
-	// Audio RTP
-	if rtpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
-		s.serverUDP = rtpConn
-		s.rtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
-		log.Printf("[AirPlay] RTP Audio listening on UDP port %d", s.rtpPort)
-		go s.handleUDPPackets()
-	}
-
-	// Control UDP (RTCP)
-	if ctrlConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
-		s.controlUDP = ctrlConn
-		s.ctrlPort = ctrlConn.LocalAddr().(*net.UDPAddr).Port
-		log.Printf("[AirPlay] Control RTCP listening on UDP port %d", s.ctrlPort)
-		go s.handleControlPackets()
-	}
-
-	// Timing UDP (NTP)
-	if timeConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
-		s.timingUDP = timeConn
-		s.timingPort = timeConn.LocalAddr().(*net.UDPAddr).Port
-		log.Printf("[AirPlay] Timing NTP listening on UDP port %d", s.timingPort)
-		go s.handleTimingPackets()
-	}
 
 	s.registerMDNS()
 
@@ -190,11 +233,65 @@ func (s *Server) Start() error {
 			if err != nil {
 				break
 			}
-			go s.handleRTSP(conn)
+			session := s.newSession(conn)
+			go session.handleRTSP()
 		}
 	}()
 
 	return nil
+}
+
+func (s *Server) Close() {
+	if s.rtspLn != nil {
+		_ = s.rtspLn.Close()
+	}
+	if s.httpServer != nil {
+		_ = s.httpServer.Close()
+	}
+	if s.mdnsServer != nil {
+		s.mdnsServer.Shutdown()
+	}
+
+	s.sessionsMu.RLock()
+	sessions := make([]*airplaySession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		sessions = append(sessions, session)
+	}
+	s.sessionsMu.RUnlock()
+	for _, session := range sessions {
+		session.Close()
+	}
+}
+
+func (s *Server) newSession(conn net.Conn) *airplaySession {
+	id := fmt.Sprintf("a%x", s.nextID.Add(1))
+	device := "unknown"
+	if conn != nil && conn.RemoteAddr() != nil {
+		device = conn.RemoteAddr().String()
+	}
+	session := &airplaySession{
+		server: s,
+		id:     id,
+		device: device,
+		conn:   conn,
+		hub:    NewAudioStreamHub(s.BufferMillis),
+	}
+	s.sessionsMu.Lock()
+	s.sessions[id] = session
+	s.sessionsMu.Unlock()
+	return session
+}
+
+func (s *Server) session(id string) *airplaySession {
+	s.sessionsMu.RLock()
+	defer s.sessionsMu.RUnlock()
+	return s.sessions[id]
+}
+
+func (s *Server) removeSession(id string) {
+	s.sessionsMu.Lock()
+	delete(s.sessions, id)
+	s.sessionsMu.Unlock()
 }
 
 func (s *Server) registerMDNS() {
@@ -320,10 +417,17 @@ func (s *Server) buildWavHeader() []byte {
 	return h
 }
 
-func (s *Server) startHTTPServer() {
+func (s *Server) startHTTPServer() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc(s.StreamPath, func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] New stream client connected from %s", r.RemoteAddr)
+	mux.HandleFunc(s.StreamPath+"/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, s.StreamPath+"/")
+		id := strings.TrimSuffix(name, ".wav")
+		session := s.session(id)
+		if session == nil || name == id {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("[HTTP] Stream client connected to AirPlay session %s from %s", id, r.RemoteAddr)
 		w.Header().Set("Content-Type", "audio/wav")
 		w.Header().Set("Cache-Control", "no-cache, no-store")
 		w.Header().Set("Pragma", "no-cache")
@@ -336,8 +440,8 @@ func (s *Server) startHTTPServer() {
 			flusher.Flush()
 		}
 
-		ch := s.Hub.Subscribe()
-		defer s.Hub.Unsubscribe(ch)
+		ch := session.hub.Subscribe()
+		defer session.hub.Unsubscribe(ch)
 
 		for data := range ch {
 			if _, err := w.Write(data); err != nil {
@@ -349,14 +453,28 @@ func (s *Server) startHTTPServer() {
 		}
 	})
 
-	log.Printf("[HTTP] Stream server listening on :%d%s", s.HTTPPort, s.StreamPath)
-	http.ListenAndServe(fmt.Sprintf(":%d", s.HTTPPort), mux)
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.HTTPPort))
+	if err != nil {
+		return err
+	}
+	s.httpLn = listener
+	s.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	log.Printf("[HTTP] AirPlay stream server listening on :%d%s/{session}.wav", s.HTTPPort, s.StreamPath)
+	go func() {
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("[HTTP] AirPlay stream server stopped: %v", err)
+		}
+	}()
+	return nil
 }
 
-func (s *Server) handleRTSP(conn net.Conn) {
-	defer conn.Close()
-	log.Printf("[RTSP] New connection from %s", conn.RemoteAddr().String())
-	reader := bufio.NewReader(conn)
+func (s *airplaySession) handleRTSP() {
+	if s.conn == nil {
+		return
+	}
+	defer s.Close()
+	log.Printf("[RTSP] New AirPlay session %s from %s", s.id, s.device)
+	reader := bufio.NewReader(s.conn)
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -374,7 +492,7 @@ func (s *Server) handleRTSP(conn net.Conn) {
 		}
 		method := parts[0]
 		uri := parts[1]
-		log.Printf("[RTSP] %s %s from %s", method, uri, conn.RemoteAddr())
+		log.Printf("[RTSP] Session %s: %s %s from %s", s.id, method, uri, s.device)
 
 		headers := make(map[string]string)
 		var contentLength int
@@ -404,11 +522,13 @@ func (s *Server) handleRTSP(conn net.Conn) {
 			io.ReadFull(reader, body)
 		}
 
-		s.dispatchRTSP(conn, method, uri, headers, body)
+		if !s.dispatchRTSP(method, uri, headers, body) {
+			return
+		}
 	}
 }
 
-func (s *Server) dispatchRTSP(conn net.Conn, method, uri string, headers map[string]string, body []byte) {
+func (s *airplaySession) dispatchRTSP(method, uri string, headers map[string]string, body []byte) bool {
 	cseq := headers["cseq"]
 	respHeaders := []string{
 		"RTSP/1.0 200 OK",
@@ -417,7 +537,7 @@ func (s *Server) dispatchRTSP(conn net.Conn, method, uri string, headers map[str
 	}
 
 	if chall, ok := headers["apple-challenge"]; ok {
-		resp := s.computeAppleResponse(chall, conn.LocalAddr())
+		resp := s.server.computeAppleResponse(chall, s.conn.LocalAddr())
 		if resp != "" {
 			respHeaders = append(respHeaders, "Apple-Response: "+resp)
 		}
@@ -429,36 +549,162 @@ func (s *Server) dispatchRTSP(conn net.Conn, method, uri string, headers map[str
 	case "ANNOUNCE":
 		s.parseSDP(string(body))
 	case "SETUP":
+		if err := s.setupUDP(); err != nil {
+			respHeaders[0] = "RTSP/1.0 500 Internal Server Error"
+			break
+		}
 		transportResp := fmt.Sprintf("RTP/AVP/UDP;unicast;mode=record;server_port=%d;control_port=%d;timing_port=%d",
 			s.rtpPort, s.ctrlPort, s.timingPort)
 		respHeaders = append(respHeaders, "Transport: "+transportResp)
-		respHeaders = append(respHeaders, "Session: 1")
+		respHeaders = append(respHeaders, "Session: "+s.id)
 		respHeaders = append(respHeaders, "Audio-Jack-Status: connected; type=analog")
 	case "RECORD":
+		if !s.activate() {
+			respHeaders[0] = "RTSP/1.0 453 Not Enough Bandwidth"
+			break
+		}
 		respHeaders = append(respHeaders, "Audio-Latency: 11025")
-		if s.OnPlay != nil {
-			go func() {
-				// Wait for audio data to start flowing
-				time.Sleep(800 * time.Millisecond)
-				log.Printf("[RTSP] Triggering OnPlay callback")
-				s.OnPlay()
-			}()
-		}
-	case "FLUSH", "PAUSE":
-		// Flush buffers
+	case "FLUSH":
+		s.hub.Reset()
+	case "PAUSE":
+		s.hub.Reset()
+		s.releaseOwnership()
 	case "TEARDOWN":
-		if s.OnStop != nil {
-			go s.OnStop()
-		}
+		// The response is written before the deferred Close releases resources.
 	case "SET_PARAMETER":
-		// Volume / progress / metadata
+		if volume, ok := parseAirPlayVolume(body); ok && s.server.OnVolume != nil {
+			s.server.OnVolume(s.id, volume)
+			s.touch()
+		}
 	}
 
 	resp := strings.Join(respHeaders, "\r\n") + "\r\n\r\n"
-	conn.Write([]byte(resp))
+	if _, err := s.conn.Write([]byte(resp)); err != nil {
+		return false
+	}
+	return method != "TEARDOWN"
 }
 
-func (s *Server) parseSDP(sdp string) {
+func parseAirPlayVolume(body []byte) (int, bool) {
+	for _, line := range strings.Split(string(body), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
+		if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "volume") {
+			continue
+		}
+		db, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if err != nil {
+			return 0, false
+		}
+		// RAOP uses 0 dB as full volume, roughly -30 dB as the audible
+		// minimum, and -144 dB as the explicit mute value.
+		if db <= -144 {
+			return 0, true
+		}
+		if db < -30 {
+			db = -30
+		}
+		if db > 0 {
+			db = 0
+		}
+		return int(math.Round((db + 30) / 30 * 100)), true
+	}
+	return 0, false
+}
+
+func (s *airplaySession) streamPath() string {
+	return fmt.Sprintf("%s/%s.wav", s.server.StreamPath, s.id)
+}
+
+func (s *airplaySession) activate() bool {
+	s.mu.Lock()
+	alreadyOwned := s.owned
+	s.mu.Unlock()
+	if alreadyOwned {
+		if s.server.OnSessionActivity != nil {
+			s.server.OnSessionActivity(s.id)
+		}
+		return true
+	}
+
+	granted := true
+	if s.server.OnSessionStart != nil {
+		granted = s.server.OnSessionStart(SessionInfo{ID: s.id, Device: s.device, StreamPath: s.streamPath(), Cancel: s.Close})
+	}
+	if granted {
+		s.mu.Lock()
+		s.owned = true
+		s.mu.Unlock()
+		log.Printf("[RTSP] AirPlay session %s acquired the speaker", s.id)
+	}
+	return granted
+}
+
+func (s *airplaySession) releaseOwnership() {
+	s.mu.Lock()
+	owned := s.owned
+	s.owned = false
+	s.mu.Unlock()
+	if owned && s.server.OnSessionStop != nil {
+		s.server.OnSessionStop(s.id)
+	}
+}
+
+func (s *airplaySession) Close() {
+	s.closeOnce.Do(func() {
+		s.releaseOwnership()
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
+		if s.rtpUDP != nil {
+			_ = s.rtpUDP.Close()
+		}
+		if s.controlUDP != nil {
+			_ = s.controlUDP.Close()
+		}
+		if s.timingUDP != nil {
+			_ = s.timingUDP.Close()
+		}
+		s.hub.Close()
+		s.server.removeSession(s.id)
+		log.Printf("[RTSP] AirPlay session %s closed", s.id)
+	})
+}
+
+func (s *airplaySession) setupUDP() error {
+	if s.rtpUDP != nil && s.controlUDP != nil && s.timingUDP != nil {
+		return nil
+	}
+
+	rtpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return err
+	}
+	controlConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		_ = rtpConn.Close()
+		return err
+	}
+	timingConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		_ = rtpConn.Close()
+		_ = controlConn.Close()
+		return err
+	}
+
+	s.rtpUDP = rtpConn
+	s.rtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
+	s.controlUDP = controlConn
+	s.ctrlPort = controlConn.LocalAddr().(*net.UDPAddr).Port
+	s.timingUDP = timingConn
+	s.timingPort = timingConn.LocalAddr().(*net.UDPAddr).Port
+	log.Printf("[AirPlay] Session %s ports: RTP=%d RTCP=%d timing=%d", s.id, s.rtpPort, s.ctrlPort, s.timingPort)
+	go s.handleUDPPackets()
+	go s.handleControlPackets()
+	go s.handleTimingPackets()
+	return nil
+}
+
+func (s *airplaySession) parseSDP(sdp string) {
 	for _, line := range strings.Split(sdp, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "a=rsaaeskey:") {
@@ -469,10 +715,10 @@ func (s *Server) parseSDP(sdp string) {
 				b64 += "="
 			}
 			encKey, err := base64.StdEncoding.DecodeString(b64)
-			if err == nil && s.rsaKey != nil {
+			if err == nil && s.server.rsaKey != nil {
 				// AirTunes encrypts the session AES key with RSA OAEP/SHA-1.
 				// PKCS#1 v1.5 decryption cannot decode keys produced by iOS/macOS.
-				key, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, s.rsaKey, encKey, nil)
+				key, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, s.server.rsaKey, encKey, nil)
 				if err == nil {
 					s.aesKey = key
 					log.Printf("[AirPlay] RSA AES key decoded successfully (%d bytes)", len(key))
@@ -499,7 +745,7 @@ func (s *Server) parseSDP(sdp string) {
 	}
 }
 
-func (s *Server) initALACDecoder(params []string) {
+func (s *airplaySession) initALACDecoder(params []string) {
 	var ints []int
 	for _, p := range params {
 		val, err := strconv.Atoi(p)
@@ -529,12 +775,15 @@ func (s *Server) initALACDecoder(params []string) {
 	}
 }
 
-func (s *Server) handleUDPPackets() {
+func (s *airplaySession) handleUDPPackets() {
 	buf := make([]byte, 4096)
 	pktCount := 0
 	for {
-		n, _, err := s.serverUDP.ReadFrom(buf)
-		if err != nil || n < 12 {
+		n, _, err := s.rtpUDP.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		if n < 12 {
 			continue
 		}
 
@@ -576,37 +825,51 @@ func (s *Server) handleUDPPackets() {
 				if pktCount == 1 {
 					log.Printf("[ALAC] First decoded frame: %d bytes PCM", len(pcm))
 				}
-				s.Hub.Broadcast(pcm)
+				s.hub.Broadcast(pcm)
+				s.touch()
 			}
 		} else {
 			// No ALAC decoder - broadcast raw
-			s.Hub.Broadcast(payload)
+			s.hub.Broadcast(payload)
+			s.touch()
 		}
 	}
 }
 
-func (s *Server) handleControlPackets() {
+func (s *airplaySession) touch() {
+	if s.server.OnSessionActivity != nil {
+		s.server.OnSessionActivity(s.id)
+	}
+}
+
+func (s *airplaySession) handleControlPackets() {
 	buf := make([]byte, 1500)
 	for {
 		if s.controlUDP == nil {
 			break
 		}
 		n, addr, err := s.controlUDP.ReadFrom(buf)
-		if err != nil || n < 4 {
+		if err != nil {
+			return
+		}
+		if n < 4 {
 			continue
 		}
 		_ = addr
 	}
 }
 
-func (s *Server) handleTimingPackets() {
+func (s *airplaySession) handleTimingPackets() {
 	buf := make([]byte, 256)
 	for {
 		if s.timingUDP == nil {
 			break
 		}
 		n, addr, err := s.timingUDP.ReadFrom(buf)
-		if err != nil || n < 32 {
+		if err != nil {
+			return
+		}
+		if n < 32 {
 			continue
 		}
 

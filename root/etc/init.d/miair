@@ -8,17 +8,24 @@ PROG=/usr/bin/miair-core
 CONF=miair
 
 start_service() {
-	local enabled name did port http_port buffer_ms store
+	local enabled airplay_enabled dlna_enabled name did port http_port dlna_port buffer_ms
+	local source_policy idle_timeout preferred_protocol store
 
 	config_load "$CONF"
 	config_get_bool enabled "config" "enabled" 0
 	[ "$enabled" -eq 1 ] || return 0
 
-	config_get name "config" "name" "小爱音箱 AirPlay"
+	config_get name "config" "name" "小爱音箱投放"
+	config_get_bool airplay_enabled "config" "airplay_enabled" 1
+	config_get_bool dlna_enabled "config" "dlna_enabled" 1
 	config_get did "config" "did" ""
 	config_get port "config" "port" "5000"
 	config_get http_port "config" "http_port" "8300"
+	config_get dlna_port "config" "dlna_port" "8301"
 	config_get buffer_ms "config" "buffer_ms" "1500"
+	config_get source_policy "config" "source_policy" "latest"
+	config_get idle_timeout "config" "idle_timeout" "10"
+	config_get preferred_protocol "config" "preferred_protocol" "airplay"
 	config_get store "config" "mi_token_store" "/etc/miair/token.json"
 
 	mkdir -p /etc/miair /var/run /var/log
@@ -26,13 +33,19 @@ start_service() {
 	procd_open_instance
 	procd_set_param command "$PROG"
 	procd_append_param command -name "$name"
+	procd_append_param command -airplay="$airplay_enabled"
 	procd_append_param command -port "$port"
 	procd_append_param command -http-port "$http_port"
 	procd_append_param command -buffer-ms "$buffer_ms"
+	procd_append_param command -dlna="$dlna_enabled"
+	procd_append_param command -dlna-port "$dlna_port"
+	procd_append_param command -source-policy "$source_policy"
+	procd_append_param command -idle-timeout "$idle_timeout"
+	procd_append_param command -preferred-protocol "$preferred_protocol"
 	procd_append_param command -store "$store"
 	[ -n "$did" ] && procd_append_param command -device "$did"
 
-	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	procd_set_param respawn "${respawn_threshold:-3600}" "${respawn_timeout:-5}" "${respawn_retry:-5}"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param user root

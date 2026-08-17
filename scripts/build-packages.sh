@@ -68,7 +68,7 @@ Section: luci
 Priority: optional
 Installed-Size: $INSTALLED_SIZE
 Homepage: https://github.com/ShawnRn/luci-app-miair
-Description: MiAir bridge for streaming AirPlay audio to Xiaomi speakers
+Description: MiAir AirPlay and DLNA bridge for Xiaomi speakers
 EOF
 
 cat > "$CONTROL/conffiles" <<'EOF'
@@ -124,7 +124,7 @@ exec "$APK" mkpkg \
 	--xattrs=no \
 	--info "name:$PACKAGE" \
 	--info "version:$VERSION-r$RELEASE" \
-	--info "description:MiAir bridge for streaming AirPlay audio to Xiaomi speakers" \
+	--info "description:MiAir AirPlay and DLNA bridge for Xiaomi speakers" \
 	--info "arch:$ARCH_APK" \
 	--info "license:custom" \
 	--info "origin:$PACKAGE" \

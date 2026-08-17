@@ -96,9 +96,11 @@ func TestParseSDPDecryptsOAEPKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.parseSDP("a=rsaaeskey:" + base64.RawStdEncoding.EncodeToString(encrypted))
-	if !bytes.Equal(s.aesKey, want) {
-		t.Fatalf("AES key = %x, want %x", s.aesKey, want)
+	session := s.newSession(nil)
+	defer session.Close()
+	session.parseSDP("a=rsaaeskey:" + base64.RawStdEncoding.EncodeToString(encrypted))
+	if !bytes.Equal(session.aesKey, want) {
+		t.Fatalf("AES key = %x, want %x", session.aesKey, want)
 	}
 }
 
@@ -114,5 +116,26 @@ func TestAudioStreamHubPrebuffersAudio(t *testing.T) {
 	got := <-ch
 	if !bytes.Equal(got, second) {
 		t.Fatalf("prebuffer retained %d bytes with prefix %x; want latest frame", len(got), got[:1])
+	}
+}
+
+func TestParseAirPlayVolume(t *testing.T) {
+	tests := []struct {
+		body string
+		want int
+	}{
+		{"volume: 0.000000\r\n", 100},
+		{"volume: -15.000000\r\n", 50},
+		{"volume: -30.000000\r\n", 0},
+		{"volume: -144.000000\r\n", 0},
+	}
+	for _, test := range tests {
+		got, ok := parseAirPlayVolume([]byte(test.body))
+		if !ok || got != test.want {
+			t.Errorf("parseAirPlayVolume(%q) = %d, %v; want %d, true", test.body, got, ok, test.want)
+		}
+	}
+	if _, ok := parseAirPlayVolume([]byte("progress: 1/2/3\r\n")); ok {
+		t.Fatal("non-volume parameter was accepted")
 	}
 }

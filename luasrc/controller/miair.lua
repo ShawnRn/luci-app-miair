@@ -16,22 +16,32 @@ function action_status()
 	local running = (luci.sys.call("pidof miair-core >/dev/null") == 0)
 	local has_token = nixio.fs.access("/etc/miair/token.json")
 	local version = nixio.fs.readfile("/usr/share/miair/version") or "development"
+	local runtime = {}
+	local runtime_json = nixio.fs.readfile("/var/run/miair-status.json")
+	if runtime_json then
+		local ok, jsonc = pcall(require, "luci.jsonc")
+		if ok and jsonc then
+			runtime = jsonc.parse(runtime_json) or {}
+		end
+	end
 	version = string.gsub(version, "^%s*(.-)%s*$", "%1")
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 		running = running,
 		has_token = has_token,
-		version = version
+		version = version,
+		source = runtime.source or {}
 	})
 end
 
 function action_get_qr()
 	local http = require "luci.http"
+	local util = require "luci.util"
 	local uci = require("luci.model.uci").cursor()
 	local store = uci:get("miair", "config", "mi_token_store") or "/etc/miair/token.json"
 
 	http.prepare_content("application/json")
-	local cmd = string.format('/usr/bin/miair-core -qr -store "%s" 2>&1', store)
+	local cmd = string.format('/usr/bin/miair-core -qr -store %s 2>&1', util.shellquote(store))
 	local handle = io.popen(cmd)
 	local result = handle:read("*a")
 	handle:close()
@@ -54,6 +64,7 @@ end
 
 function action_poll_qr()
 	local http = require "luci.http"
+	local util = require "luci.util"
 	local uci = require("luci.model.uci").cursor()
 	local lp_url = http.formvalue("lp_url") or ""
 	local store = uci:get("miair", "config", "mi_token_store") or "/etc/miair/token.json"
@@ -64,7 +75,7 @@ function action_poll_qr()
 		return
 	end
 
-	local cmd = string.format('/usr/bin/miair-core -poll-qr "%s" -store "%s" 2>&1', lp_url, store)
+	local cmd = string.format('/usr/bin/miair-core -poll-qr %s -store %s 2>&1', util.shellquote(lp_url), util.shellquote(store))
 	local handle = io.popen(cmd)
 	local result = handle:read("*a")
 	handle:close()
@@ -84,12 +95,13 @@ end
 
 function action_get_devices()
 	local http = require "luci.http"
+	local util = require "luci.util"
 	local uci = require("luci.model.uci").cursor()
 	local store = uci:get("miair", "config", "mi_token_store") or "/etc/miair/token.json"
 
 	http.prepare_content("application/json")
 
-	local cmd = string.format('/usr/bin/miair-core -list -store "%s" 2>&1', store)
+	local cmd = string.format('/usr/bin/miair-core -list -store %s 2>&1', util.shellquote(store))
 	local handle = io.popen(cmd)
 	local result = handle:read("*a")
 	handle:close()

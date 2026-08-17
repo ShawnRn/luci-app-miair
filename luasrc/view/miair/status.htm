@@ -36,6 +36,12 @@
 		</div>
 	</div>
 	<div class="cbi-value">
+		<label class="cbi-value-title"><%:当前音源%></label>
+		<div class="cbi-value-field">
+			<span id="miair_source_status" style="font-size: 13px; color: #666;"><%:等待状态更新...%></span>
+		</div>
+	</div>
+	<div class="cbi-value">
 		<label class="cbi-value-title"><%:小米云端扫码授权%></label>
 		<div class="cbi-value-field">
 			<input type="button" class="cbi-button cbi-button-action" id="btn_qr_login" value="<%:米家/小米 App 扫码授权登录%>" onclick="startQRLogin()" />
@@ -69,11 +75,12 @@ XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status"
 		var badge = document.getElementById('miair_status_badge');
 		var tokenBadge = document.getElementById('miair_token_badge');
 		var version = document.getElementById('miair_version');
+		var sourceStatus = document.getElementById('miair_source_status');
 		if (data && badge) {
 			if (version && data.version) version.innerHTML = 'v' + data.version;
 			if (data.running) {
 				badge.className = 'miair-status-badge miair-running';
-				badge.innerHTML = '<%:运行中 (AirPlay 广播正常)%>';
+				badge.innerHTML = '<%:运行中 (AirPlay / DLNA 广播正常)%>';
 			} else {
 				badge.className = 'miair-status-badge miair-stopped';
 				badge.innerHTML = '<%:未运行%>';
@@ -82,6 +89,23 @@ XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status"
 				tokenBadge.innerHTML = '<span style="color: #28a745;">✓ 已有小米云端授权凭据</span>';
 			} else {
 				tokenBadge.innerHTML = '<span style="color: #dc3545;">! 尚未授权登录</span>';
+			}
+			if (sourceStatus) {
+				var source = data.source || {};
+				var policyNames = {
+					latest: '<%:最新设备优先%>',
+					lock: '<%:当前设备锁定%>',
+					idle: '<%:空闲后允许接管%>',
+					priority: '<%:按协议优先级%>'
+				};
+				var policy = policyNames[source.policy] || source.policy || '-';
+				if (source.active) {
+					var protocol = source.active.protocol === 'dlna' ? 'DLNA' : 'AirPlay';
+					sourceStatus.innerHTML = '<span style="color: #28a745; font-weight: bold;">' + protocol + '</span>' +
+						' · ' + (source.active.device || '<%:未知设备%>') + ' · <%:策略：%>' + policy;
+				} else {
+					sourceStatus.innerHTML = '<%:空闲，等待 AirPlay 或 DLNA 音源%> · <%:策略：%>' + policy;
+				}
 			}
 		}
 	}
