@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"miair-core/miservice"
 	"miair-core/source"
 )
 
@@ -45,8 +46,9 @@ type Coordinator struct {
 }
 
 type RuntimeStatus struct {
-	UpdatedAt time.Time       `json:"updated_at"`
-	Source    source.Snapshot `json:"source"`
+	UpdatedAt time.Time              `json:"updated_at"`
+	Source    source.Snapshot        `json:"source"`
+	Token     *miservice.TokenStatus `json:"token,omitempty"`
 }
 
 func NewCoordinator(manager *source.Manager, speaker Speaker, deviceID, statusPath string) *Coordinator {
@@ -182,10 +184,10 @@ func (c *Coordinator) handleCommand(cmd command) {
 			}
 			err := c.speaker.PlayByMusicURL(c.deviceID, cmd.streamURL)
 			if err == nil {
-				log.Printf("[Source] Speaker started session %s on attempt %d", cmd.sessionID, attempt)
+				log.Printf("[Source] Speaker started session %s on attempt %d (url: %s)", cmd.sessionID, attempt, cmd.streamURL)
 				return
 			}
-			log.Printf("[Source] Speaker play attempt %d failed for session %s: %v", attempt, cmd.sessionID, err)
+			log.Printf("[Source] Speaker play attempt %d failed for session %s (url: %s): %v", attempt, cmd.sessionID, cmd.streamURL, err)
 			if attempt < 3 {
 				time.Sleep(time.Duration(attempt) * time.Second)
 			}
@@ -226,7 +228,14 @@ func (c *Coordinator) writeStatus() {
 	if c.statusPath == "" {
 		return
 	}
-	status := RuntimeStatus{UpdatedAt: time.Now(), Source: c.manager.Snapshot()}
+	status := RuntimeStatus{
+		UpdatedAt: time.Now(),
+		Source:    c.manager.Snapshot(),
+	}
+	if tsp, ok := c.speaker.(interface{ GetTokenStatus() miservice.TokenStatus }); ok {
+		ts := tsp.GetTokenStatus()
+		status.Token = &ts
+	}
 	data, err := json.Marshal(status)
 	if err != nil {
 		return

@@ -77,7 +77,9 @@ XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status"
 		var version = document.getElementById('miair_version');
 		var sourceStatus = document.getElementById('miair_source_status');
 		if (data && badge) {
-			if (version && data.version) version.innerHTML = 'v' + data.version;
+			if (version && data.version) {
+				version.innerHTML = 'v' + data.version;
+			}
 			if (data.running) {
 				badge.className = 'miair-status-badge miair-running';
 				badge.innerHTML = '<%:运行中 (AirPlay / DLNA 广播正常)%>';
@@ -86,7 +88,13 @@ XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status"
 				badge.innerHTML = '<%:未运行%>';
 			}
 			if (data.has_token) {
-				tokenBadge.innerHTML = '<span style="color: #28a745;">✓ 已有小米云端授权凭据</span>';
+				if (data.token && data.token.valid) {
+					tokenBadge.innerHTML = '<span style="color: #28a745;">✓ 已有小米云端授权凭据 (自动保活中)</span>';
+				} else if (data.token && data.token.last_error) {
+					tokenBadge.innerHTML = '<span style="color: #dc3545;" title="' + (data.token.last_error || '') + '">! 小米凭据异常，请重新扫码</span>';
+				} else {
+					tokenBadge.innerHTML = '<span style="color: #28a745;">✓ 已有小米云端授权凭据</span>';
+				}
 			} else {
 				tokenBadge.innerHTML = '<span style="color: #dc3545;">! 尚未授权登录</span>';
 			}
@@ -101,8 +109,8 @@ XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "services", "miair", "status"
 				var policy = policyNames[source.policy] || source.policy || '-';
 				if (source.active) {
 					var protocol = source.active.protocol === 'dlna' ? 'DLNA' : 'AirPlay';
-					sourceStatus.innerHTML = '<span style="color: #28a745; font-weight: bold;">' + protocol + '</span>' +
-						' · ' + (source.active.device || '<%:未知设备%>') + ' · <%:策略：%>' + policy;
+					sourceStatus.innerHTML = '<span style="color: #28a745; font-weight: bold;">● ' + protocol + ' <%:正在投播中%></span>' +
+						' · <%:设备：%>' + (source.active.device || '<%:未知设备%>') + ' · <%:策略：%>' + policy;
 				} else {
 					sourceStatus.innerHTML = '<%:空闲，等待 AirPlay 或 DLNA 音源%> · <%:策略：%>' + policy;
 				}

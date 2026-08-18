@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -32,6 +33,13 @@ type TokenData struct {
 	Ssecurity string `json:"ssecurity"`
 }
 
+type TokenStatus struct {
+	HasCredentials bool      `json:"has_credentials"`
+	Valid          bool      `json:"valid"`
+	LastRefresh    time.Time `json:"last_refresh,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+}
+
 type StoreData struct {
 	UserID    string               `json:"userId"`
 	PassToken string               `json:"passToken"`
@@ -40,10 +48,13 @@ type StoreData struct {
 }
 
 type Account struct {
-	StoreFile  string
-	Data       StoreData
-	httpClient *http.Client
-	mu         sync.Mutex
+	StoreFile   string
+	Data        StoreData
+	httpClient  *http.Client
+	mu          sync.Mutex
+	statusMu    sync.RWMutex
+	tokenStatus TokenStatus
+	refreshStop chan struct{}
 }
 
 func NewAccount(storeFile string) *Account {
@@ -61,6 +72,12 @@ func NewAccount(storeFile string) *Account {
 	acc.LoadStore()
 	if acc.Data.DeviceID == "" {
 		acc.Data.DeviceID = strings.ToUpper(randomHexString(8))
+	}
+	if acc.Data.UserID != "" && acc.Data.PassToken != "" {
+		acc.tokenStatus.HasCredentials = true
+		if tok, ok := acc.Data.Tokens["micoapi"]; ok && tok.Token != "" {
+			acc.tokenStatus.Valid = true
+		}
 	}
 	return acc
 }
@@ -190,27 +207,123 @@ func (a *Account) PollQRLogin(lpURL string) (string, *StoreData, error) {
 }
 
 func (a *Account) EnsureToken(sid string) (*TokenData, error) {
-	if tok, ok := a.Data.Tokens[sid]; ok && tok.Token != "" {
+	a.mu.Lock()
+	tok, ok := a.Data.Tokens[sid]
+	a.mu.Unlock()
+	if ok && tok.Token != "" {
 		return &tok, nil
 	}
-	if a.Data.PassToken == "" || a.Data.UserID == "" {
+	return a.RefreshToken(sid)
+}
+
+func (a *Account) GetTokenStatus() TokenStatus {
+	a.statusMu.RLock()
+	defer a.statusMu.RUnlock()
+	return a.tokenStatus
+}
+
+func (a *Account) StartAutoRefresh(interval time.Duration) {
+	if interval <= 0 {
+		interval = 6 * time.Hour
+	}
+	a.mu.Lock()
+	if a.refreshStop != nil {
+		a.mu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	a.refreshStop = stopCh
+	a.mu.Unlock()
+
+	go func() {
+		// Proactively pre-warm token on startup
+		a.mu.Lock()
+		hasCreds := a.Data.PassToken != "" && a.Data.UserID != ""
+		a.mu.Unlock()
+
+		if hasCreds {
+			if _, err := a.RefreshToken("micoapi"); err != nil {
+				log.Printf("[MiService] Initial token pre-warm failed: %v", err)
+			} else {
+				log.Printf("[MiService] Initial token pre-warmed successfully")
+			}
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				a.mu.Lock()
+				hasCreds := a.Data.PassToken != "" && a.Data.UserID != ""
+				a.mu.Unlock()
+
+				if hasCreds {
+					if _, err := a.RefreshToken("micoapi"); err != nil {
+						log.Printf("[MiService] Periodic token refresh failed: %v", err)
+					} else {
+						log.Printf("[MiService] Periodic token refresh succeeded")
+					}
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (a *Account) StopAutoRefresh() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.refreshStop != nil {
+		close(a.refreshStop)
+		a.refreshStop = nil
+	}
+}
+
+func (a *Account) RefreshToken(sid string) (*TokenData, error) {
+	a.mu.Lock()
+	userID := a.Data.UserID
+	passToken := a.Data.PassToken
+	a.mu.Unlock()
+
+	if passToken == "" || userID == "" {
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = false
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = "no login credentials found"
+		a.statusMu.Unlock()
 		return nil, fmt.Errorf("no login credentials (passToken) found")
 	}
 
 	loginURL := fmt.Sprintf("https://account.xiaomi.com/pass/serviceLogin?sid=%s&_json=true", sid)
-	req, _ := http.NewRequest("GET", loginURL, nil)
+	req, err := http.NewRequest("GET", loginURL, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "APP/com.xiaomi.mihome APPV/6.0.103")
-	req.AddCookie(&http.Cookie{Name: "userId", Value: a.Data.UserID})
-	req.AddCookie(&http.Cookie{Name: "passToken", Value: a.Data.PassToken})
+	req.AddCookie(&http.Cookie{Name: "userId", Value: userID})
+	req.AddCookie(&http.Cookie{Name: "passToken", Value: passToken})
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = err.Error()
+		a.statusMu.Unlock()
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = err.Error()
+		a.statusMu.Unlock()
 		return nil, err
 	}
 
@@ -220,17 +333,44 @@ func (a *Account) EnsureToken(sid string) (*TokenData, error) {
 	}
 
 	var res struct {
-		Code      int    `json:"code"`
-		Location  string `json:"location"`
-		Nonce     int64  `json:"nonce"`
-		Ssecurity string `json:"ssecurity"`
+		Code        int    `json:"code"`
+		Location    string `json:"location"`
+		Nonce       int64  `json:"nonce"`
+		Ssecurity   string `json:"ssecurity"`
+		Desc        string `json:"desc"`
+		Description string `json:"description"`
 	}
 	if err := json.Unmarshal([]byte(raw), &res); err != nil {
-		return nil, err
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = err.Error()
+		a.statusMu.Unlock()
+		return nil, fmt.Errorf("serviceLogin unmarshal failed (%s): %w", raw, err)
+	}
+
+	if res.Code != 0 {
+		desc := res.Desc
+		if desc == "" {
+			desc = res.Description
+		}
+		errMsg := fmt.Sprintf("serviceLogin failed (code %d): %s", res.Code, desc)
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = errMsg
+		a.statusMu.Unlock()
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
 	if res.Location == "" || res.Ssecurity == "" {
-		return nil, fmt.Errorf("failed to get security token url for %s", sid)
+		errMsg := fmt.Sprintf("failed to get security token url for %s", sid)
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = errMsg
+		a.statusMu.Unlock()
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
 	nsec := fmt.Sprintf("nonce=%d&%s", res.Nonce, res.Ssecurity)
@@ -238,56 +378,82 @@ func (a *Account) EnsureToken(sid string) (*TokenData, error) {
 	h.Write([]byte(nsec))
 	clientSign := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-	secURL := fmt.Sprintf("%s&clientSign=%s", res.Location, url.QueryEscape(clientSign))
-	secReq, _ := http.NewRequest("GET", secURL, nil)
+	var secURL string
+	if strings.Contains(res.Location, "?") {
+		secURL = fmt.Sprintf("%s&clientSign=%s", res.Location, url.QueryEscape(clientSign))
+	} else {
+		secURL = fmt.Sprintf("%s?clientSign=%s", res.Location, url.QueryEscape(clientSign))
+	}
+	secReq, err := http.NewRequest("GET", secURL, nil)
+	if err != nil {
+		return nil, err
+	}
 	secReq.Header.Set("User-Agent", "APP/com.xiaomi.mihome APPV/6.0.103")
 
 	secResp, err := a.httpClient.Do(secReq)
 	if err != nil {
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = err.Error()
+		a.statusMu.Unlock()
 		return nil, err
 	}
 	defer secResp.Body.Close()
 
 	var serviceToken string
 	for _, c := range secResp.Cookies() {
-		if c.Name == "serviceToken" {
+		if c.Name == "serviceToken" && c.Value != "" {
 			serviceToken = c.Value
 			break
 		}
 	}
 	if serviceToken == "" {
-		return nil, fmt.Errorf("no serviceToken cookie received")
+		if u, parseErr := url.Parse(res.Location); parseErr == nil && a.httpClient.Jar != nil {
+			for _, c := range a.httpClient.Jar.Cookies(u) {
+				if c.Name == "serviceToken" && c.Value != "" {
+					serviceToken = c.Value
+					break
+				}
+			}
+		}
+	}
+	if serviceToken == "" {
+		errMsg := fmt.Sprintf("no serviceToken cookie received for %s", sid)
+		a.statusMu.Lock()
+		a.tokenStatus.HasCredentials = true
+		a.tokenStatus.Valid = false
+		a.tokenStatus.LastError = errMsg
+		a.statusMu.Unlock()
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
 	tok := TokenData{
 		Token:     serviceToken,
 		Ssecurity: res.Ssecurity,
 	}
+	a.mu.Lock()
+	if a.Data.Tokens == nil {
+		a.Data.Tokens = make(map[string]TokenData)
+	}
 	a.Data.Tokens[sid] = tok
-	a.SaveStore()
+	a.mu.Unlock()
+	_ = a.SaveStore()
+
+	a.statusMu.Lock()
+	a.tokenStatus.HasCredentials = true
+	a.tokenStatus.Valid = true
+	a.tokenStatus.LastRefresh = time.Now()
+	a.tokenStatus.LastError = ""
+	a.statusMu.Unlock()
+
 	return &tok, nil
 }
 
 func (a *Account) DeviceList(master int) ([]DeviceInfo, error) {
-	tok, err := a.EnsureToken("micoapi")
+	body, err := a.RequestMina(fmt.Sprintf("/admin/v2/device_list?master=%d", master), nil)
 	if err != nil {
-		return nil, fmt.Errorf("ensure micoapi token failed: %w", err)
-	}
-
-	reqURL := fmt.Sprintf("https://api2.mina.mi.com/admin/v2/device_list?master=%d", master)
-	req, _ := http.NewRequest("GET", reqURL, nil)
-	req.Header.Set("User-Agent", "MISoundBox/1.4.0, iOS/14.4")
-	req.Header.Set("Cookie", fmt.Sprintf("userId=%s; serviceToken=%s", a.Data.UserID, tok.Token))
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("device list request failed: %w", err)
 	}
 
 	var res struct {
@@ -296,7 +462,7 @@ func (a *Account) DeviceList(master int) ([]DeviceInfo, error) {
 		Data    []DeviceInfo `json:"data"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal device list failed (%s): %w", string(body), err)
 	}
 	if res.Code != 0 {
 		return nil, fmt.Errorf("mina api error (code %d): %s", res.Code, res.Message)
@@ -306,30 +472,65 @@ func (a *Account) DeviceList(master int) ([]DeviceInfo, error) {
 }
 
 func (a *Account) RequestMina(uri string, form url.Values) ([]byte, error) {
-	tok, err := a.EnsureToken("micoapi")
-	if err != nil {
-		return nil, fmt.Errorf("ensure micoapi token failed: %w", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		tok, err := a.EnsureToken("micoapi")
+		if err != nil {
+			return nil, fmt.Errorf("ensure micoapi token failed: %w", err)
+		}
+
+		reqURL := "https://api2.mina.mi.com" + uri
+		var req *http.Request
+		if form != nil {
+			req, err = http.NewRequest("POST", reqURL, strings.NewReader(form.Encode()))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		} else {
+			req, err = http.NewRequest("GET", reqURL, nil)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		req.Header.Set("User-Agent", "MISoundBox/1.4.0, iOS/14.4")
+		req.Header.Set("Cookie", fmt.Sprintf("userId=%s; serviceToken=%s", a.Data.UserID, tok.Token))
+
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		isUnauthorized := resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
+		isHTML := strings.HasPrefix(strings.TrimSpace(string(body)), "<")
+
+		if isUnauthorized || isHTML {
+			if attempt == 0 {
+				a.mu.Lock()
+				delete(a.Data.Tokens, "micoapi")
+				a.mu.Unlock()
+				_, refreshErr := a.RefreshToken("micoapi")
+				if refreshErr != nil {
+					return nil, fmt.Errorf("failed to refresh micoapi token: %w", refreshErr)
+				}
+				continue
+			}
+			return nil, fmt.Errorf("mina request unauthorized (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("mina request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		return body, nil
 	}
-
-	reqURL := "https://api2.mina.mi.com" + uri
-	var req *http.Request
-	if form != nil {
-		req, _ = http.NewRequest("POST", reqURL, strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	} else {
-		req, _ = http.NewRequest("GET", reqURL, nil)
-	}
-
-	req.Header.Set("User-Agent", "MISoundBox/1.4.0, iOS/14.4")
-	req.Header.Set("Cookie", fmt.Sprintf("userId=%s; serviceToken=%s", a.Data.UserID, tok.Token))
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	return io.ReadAll(resp.Body)
+	return nil, fmt.Errorf("mina request failed after retry")
 }
 
 func (a *Account) PlayByMusicURL(deviceID, streamURL string) error {
@@ -354,7 +555,10 @@ func (a *Account) PlayByMusicURL(deviceID, streamURL string) error {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &res); err == nil && res.Code != 0 {
+	if err := json.Unmarshal(body, &res); err != nil {
+		return fmt.Errorf("player_play_url unmarshal failed (%s): %w", string(body), err)
+	}
+	if res.Code != 0 {
 		return fmt.Errorf("player_play_url error (code %d): %s", res.Code, res.Message)
 	}
 
@@ -379,7 +583,10 @@ func (a *Account) PlayerPause(deviceID string) error {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &res); err == nil && res.Code != 0 {
+	if err := json.Unmarshal(body, &res); err != nil {
+		return fmt.Errorf("player_pause unmarshal failed (%s): %w", string(body), err)
+	}
+	if res.Code != 0 {
 		return fmt.Errorf("player_pause error (code %d): %s", res.Code, res.Message)
 	}
 	return nil
@@ -409,7 +616,10 @@ func (a *Account) PlayerSetVolume(deviceID string, volume int) error {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &res); err == nil && res.Code != 0 {
+	if err := json.Unmarshal(body, &res); err != nil {
+		return fmt.Errorf("player_set_volume unmarshal failed (%s): %w", string(body), err)
+	}
+	if res.Code != 0 {
 		return fmt.Errorf("player_set_volume error (code %d): %s", res.Code, res.Message)
 	}
 	return nil
@@ -425,8 +635,21 @@ func (a *Account) PlayerStop(deviceID string) error {
 	data.Set("message", string(msgJSON))
 	data.Set("method", "player_play_operation")
 	data.Set("path", "mediaplayer")
-	_, err := a.RequestMina("/remote/ubus", data)
-	return err
+	body, err := a.RequestMina("/remote/ubus", data)
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return fmt.Errorf("player_stop unmarshal failed (%s): %w", string(body), err)
+	}
+	if res.Code != 0 {
+		return fmt.Errorf("player_stop error (code %d): %s", res.Code, res.Message)
+	}
+	return nil
 }
 
 func randomHexString(n int) string {

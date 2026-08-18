@@ -41,26 +41,26 @@ s_adv.addremove = false
 o = s_adv:option(Value, "port", translate("AirPlay RTSP 端口"))
 o.default = "5000"
 o.datatype = "port"
-o.rmempty = false
+o.rmempty = true
 o:depends("airplay_enabled", "1")
 
 o = s_adv:option(Value, "buffer_ms", translate("音频预缓冲（毫秒）"))
-o.default = "1500"
+o.default = "500"
 o.datatype = "range(0,5000)"
-o.description = translate("保留最近一段 PCM 音频，供小爱音箱连接后补发，减少开头丢失。0 表示关闭；输出固定为 44.1 kHz / 16-bit / 双声道 PCM（约 1411 kbps）。")
-o.rmempty = false
+o.description = translate("保留最近一段 PCM 音频，供小爱音箱连接后快速填满播放缓冲。局域网环境建议设为 300~500ms（起播更灵敏）；若 Wi-Fi 偶发卡顿可适当调大（如 1000~1500ms）。0 表示关闭缓冲。")
+o.rmempty = true
 o:depends("airplay_enabled", "1")
 
 o = s_adv:option(Value, "http_port", translate("HTTP 音频流中转端口"))
 o.default = "8300"
 o.datatype = "port"
-o.rmempty = false
+o.rmempty = true
 o:depends("airplay_enabled", "1")
 
 o = s_adv:option(Value, "dlna_port", translate("DLNA 控制与媒体代理端口"))
 o.default = "8301"
 o.datatype = "port"
-o.rmempty = false
+o.rmempty = true
 o:depends("dlna_enabled", "1")
 
 s_switch = m:section(NamedSection, "config", "miair", translate("多设备音源切换"))
@@ -79,14 +79,14 @@ o.rmempty = false
 o = s_switch:option(Value, "idle_timeout", translate("音源空闲超时（秒）"))
 o.default = "10"
 o.datatype = "range(1,3600)"
-o.rmempty = false
+o.rmempty = true
 o:depends("source_policy", "idle")
 
 o = s_switch:option(ListValue, "preferred_protocol", translate("优先协议"))
 o:value("airplay", translate("AirPlay 优先"))
 o:value("dlna", translate("DLNA 优先"))
 o.default = "airplay"
-o.rmempty = false
+o.rmempty = true
 o:depends("source_policy", "priority")
 
 return m

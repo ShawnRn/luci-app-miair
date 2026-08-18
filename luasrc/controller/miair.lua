@@ -12,12 +12,22 @@ function index()
 	entry({"admin", "services", "miair", "poll_qr"}, call("action_poll_qr")).leaf = true
 end
 
+local function read_file(path)
+	local f = io.open(path, "r")
+	if not f then return nil end
+	local content = f:read("*a")
+	f:close()
+	return content
+end
+
 function action_status()
-	local running = (luci.sys.call("pidof miair-core >/dev/null") == 0)
+	local sys = require "luci.sys"
+	local http = require "luci.http"
+	local running = (sys.call("pidof miair-core >/dev/null") == 0)
 	local has_token = nixio.fs.access("/etc/miair/token.json")
-	local version = nixio.fs.readfile("/usr/share/miair/version") or "development"
+	local version = read_file("/usr/share/miair/version") or "1.1.1"
 	local runtime = {}
-	local runtime_json = nixio.fs.readfile("/var/run/miair-status.json")
+	local runtime_json = read_file("/var/run/miair-status.json")
 	if runtime_json then
 		local ok, jsonc = pcall(require, "luci.jsonc")
 		if ok and jsonc then
@@ -25,12 +35,13 @@ function action_status()
 		end
 	end
 	version = string.gsub(version, "^%s*(.-)%s*$", "%1")
-	luci.http.prepare_content("application/json")
-	luci.http.write_json({
+	http.prepare_content("application/json")
+	http.write_json({
 		running = running,
 		has_token = has_token,
 		version = version,
-		source = runtime.source or {}
+		source = runtime.source or {},
+		token = runtime.token or {}
 	})
 end
 

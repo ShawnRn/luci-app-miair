@@ -433,8 +433,11 @@ func (s *Server) startHTTPServer() error {
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Accept-Ranges", "none")
 
-		w.Write(s.buildWavHeader())
+		if _, err := w.Write(s.buildWavHeader()); err != nil {
+			return
+		}
 		flusher, ok := w.(http.Flusher)
 		if ok {
 			flusher.Flush()
@@ -446,6 +449,21 @@ func (s *Server) startHTTPServer() error {
 		for data := range ch {
 			if _, err := w.Write(data); err != nil {
 				break
+			}
+			// Drain all currently available buffered frames without flushing per-packet
+		drainLoop:
+			for {
+				select {
+				case nextData, ok := <-ch:
+					if !ok {
+						break drainLoop
+					}
+					if _, err := w.Write(nextData); err != nil {
+						return
+					}
+				default:
+					break drainLoop
+				}
 			}
 			if ok {
 				flusher.Flush()

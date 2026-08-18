@@ -208,12 +208,16 @@ func (s *Server) handleMediaProxy(w http.ResponseWriter, r *http.Request) {
 	media := s.media[id]
 	s.mu.RUnlock()
 	if media == nil || id == "" {
+		log.Printf("[DLNA] Media session %s not found (URL: %s from %s)", id, r.URL.Path, r.RemoteAddr)
 		http.NotFound(w, r)
 		return
 	}
 
+	log.Printf("[DLNA] Media client connected for session %s (method: %s, from %s, remoteURL: %s)", id, r.Method, r.RemoteAddr, media.remoteURL)
+
 	request, err := http.NewRequestWithContext(media.ctx, r.Method, media.remoteURL, nil)
 	if err != nil {
+		log.Printf("[DLNA] Failed to create request for %s: %v", media.remoteURL, err)
 		http.Error(w, "invalid media URL", http.StatusBadGateway)
 		return
 	}
@@ -225,10 +229,14 @@ func (s *Server) handleMediaProxy(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("User-Agent", serverToken)
 	response, err := s.client.Do(request)
 	if err != nil {
+		log.Printf("[DLNA] Upstream request failed for session %s (%s): %v", id, media.remoteURL, err)
 		http.Error(w, "media source unavailable", http.StatusBadGateway)
 		return
 	}
 	defer response.Body.Close()
+
+	log.Printf("[DLNA] Upstream responded for session %s: status=%d, type=%s, length=%s", id, response.StatusCode, response.Header.Get("Content-Type"), response.Header.Get("Content-Length"))
+
 	for _, header := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
 		if value := response.Header.Get(header); value != "" {
 			w.Header().Set(header, value)
@@ -239,10 +247,30 @@ func (s *Server) handleMediaProxy(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	if s.OnSessionActivity != nil {
-		s.OnSessionActivity(id)
+
+	flusher, hasFlusher := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, rErr := response.Body.Read(buf)
+		if n > 0 {
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				log.Printf("[DLNA] Client write failed for session %s: %v", id, wErr)
+				break
+			}
+			if hasFlusher {
+				flusher.Flush()
+			}
+			if s.OnSessionActivity != nil {
+				s.OnSessionActivity(id)
+			}
+		}
+		if rErr != nil {
+			if rErr != io.EOF {
+				log.Printf("[DLNA] Upstream read finished for session %s: %v", id, rErr)
+			}
+			break
+		}
 	}
-	_, _ = io.Copy(w, response.Body)
 }
 
 func (s *Server) startSSDP() error {

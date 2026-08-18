@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -91,6 +92,7 @@ func (s *Server) handleAVTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	values, code, description := s.runAVTransportAction(action, params, r.RemoteAddr)
 	if code != 0 {
+		log.Printf("[DLNA] AVTransport action %q from %s returned error %d: %s", action, r.RemoteAddr, code, description)
 		writeXML(w, http.StatusInternalServerError, soapFault(code, description))
 		return
 	}
@@ -101,7 +103,9 @@ func (s *Server) runAVTransportAction(action string, params map[string]string, r
 	switch action {
 	case "SetAVTransportURI":
 		uri := params["CurrentURI"]
+		log.Printf("[DLNA] SetAVTransportURI from %s: %s", remoteAddr, uri)
 		if err := validateMediaURL(uri); err != nil {
+			log.Printf("[DLNA] Invalid media URI from %s: %v", remoteAddr, err)
 			return nil, 714, "Illegal MIME-type or media URL"
 		}
 		s.mu.RLock()
@@ -121,6 +125,7 @@ func (s *Server) runAVTransportAction(action string, params map[string]string, r
 		s.mu.RLock()
 		uri := s.currentURI
 		s.mu.RUnlock()
+		log.Printf("[DLNA] Play action from %s for URI: %s", remoteAddr, uri)
 		if uri == "" {
 			return nil, 701, "Transition not available"
 		}

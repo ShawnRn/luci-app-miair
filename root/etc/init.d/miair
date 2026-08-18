@@ -22,7 +22,7 @@ start_service() {
 	config_get port "config" "port" "5000"
 	config_get http_port "config" "http_port" "8300"
 	config_get dlna_port "config" "dlna_port" "8301"
-	config_get buffer_ms "config" "buffer_ms" "1500"
+	config_get buffer_ms "config" "buffer_ms" "500"
 	config_get source_policy "config" "source_policy" "latest"
 	config_get idle_timeout "config" "idle_timeout" "10"
 	config_get preferred_protocol "config" "preferred_protocol" "airplay"

@@ -41,11 +41,23 @@ var (
 )
 
 func getLocalIP() string {
+	if iface, err := net.InterfaceByName("br-lan"); err == nil {
+		if addrs, err := iface.Addrs(); err == nil {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+					if ip4 := ipnet.IP.To4(); ip4 != nil {
+						return ip4.String()
+					}
+				}
+			}
+		}
+	}
+
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "127.0.0.1"
 	}
-	// Prefer LAN bridge IP (192.168.x.x or 10.x.x.x) over WAN
+	// Prefer LAN bridge IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x) over WAN
 	var fallback string
 	for _, addr := range addrs {
 		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
@@ -55,6 +67,9 @@ func getLocalIP() string {
 					return ipStr
 				}
 				if ip4[0] == 10 {
+					return ipStr
+				}
+				if ip4[0] == 172 && (ip4[1] >= 16 && ip4[1] <= 31) {
 					return ipStr
 				}
 				if fallback == "" {
@@ -127,6 +142,8 @@ func main() {
 
 	// 4. Runtime Mode
 	account := miservice.NewAccount(*flagStore)
+	account.StartAutoRefresh(6 * time.Hour)
+	defer account.StopAutoRefresh()
 
 	targetDID := *flagDevice
 	if targetDID == "" {
