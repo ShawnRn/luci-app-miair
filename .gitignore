@@ -1,4 +1,5 @@
-core/miair-core
+core/miair-core*
+core/core
 .DS_Store
 *.ipk
 *.apk

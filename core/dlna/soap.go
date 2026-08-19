@@ -242,9 +242,14 @@ func (s *Server) handleRenderingControl(w http.ResponseWriter, r *http.Request) 
 func (s *Server) runRenderingAction(action string, params map[string]string) (map[string]string, int, string) {
 	switch action {
 	case "GetVolume":
-		s.mu.RLock()
-		volume := s.volume
-		s.mu.RUnlock()
+		volume := 50
+		if s.GetVolume != nil {
+			volume = s.GetVolume()
+		} else {
+			s.mu.RLock()
+			volume = s.volume
+			s.mu.RUnlock()
+		}
 		return map[string]string{"CurrentVolume": fmt.Sprintf("%d", volume)}, 0, ""
 	case "SetVolume":
 		volume := parseVolume(params["DesiredVolume"])

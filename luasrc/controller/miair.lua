@@ -10,6 +10,7 @@ function index()
 	entry({"admin", "services", "miair", "status"}, call("action_status")).leaf = true
 	entry({"admin", "services", "miair", "get_qr"}, call("action_get_qr")).leaf = true
 	entry({"admin", "services", "miair", "poll_qr"}, call("action_poll_qr")).leaf = true
+	entry({"admin", "services", "miair", "restart"}, call("action_restart")).leaf = true
 end
 
 local function read_file(path)
@@ -18,6 +19,50 @@ local function read_file(path)
 	local content = f:read("*a")
 	f:close()
 	return content
+end
+
+local function resolve_device_name(device_str)
+	if not device_str or device_str == "" then return "" end
+	local ip = string.match(device_str, "^%[?([^%]]+)%]?")
+	if not ip then ip = string.match(device_str, "^([^:]+)") end
+	if not ip then return device_str end
+
+	local leases_mac_name = {}
+	local leases_ip_name = {}
+	local leases_mac_ip = {}
+	local f = io.open("/tmp/dhcp.leases", "r")
+	if f then
+		for line in f:lines() do
+			local _, mac, lease_ip, name = string.match(line, "(%d+)%s+([%a%d:]+)%s+([%d%.]+)%s+([^%s]+)")
+			if mac and name and name ~= "*" then
+				local lmac = string.lower(mac)
+				leases_mac_name[lmac] = name
+				leases_ip_name[lease_ip] = name
+				leases_mac_ip[lmac] = lease_ip
+			end
+		end
+		f:close()
+	end
+
+	if leases_ip_name[ip] then
+		return string.format("%s (%s)", leases_ip_name[ip], ip)
+	end
+
+	local handle = io.popen(string.format("ip neigh show %s 2>/dev/null", ip))
+	if handle then
+		local out = handle:read("*a")
+		handle:close()
+		local mac = string.match(out or "", "lladdr%s+([%a%d:]+)")
+		if mac then
+			local lmac = string.lower(mac)
+			if leases_mac_name[lmac] then
+				local show_ip = leases_mac_ip[lmac] or ip
+				return string.format("%s (%s)", leases_mac_name[lmac], show_ip)
+			end
+		end
+	end
+
+	return device_str
 end
 
 function action_status()
@@ -33,6 +78,9 @@ function action_status()
 		if ok and jsonc then
 			runtime = jsonc.parse(runtime_json) or {}
 		end
+	end
+	if runtime.source and runtime.source.active and runtime.source.active.device then
+		runtime.source.active.device = resolve_device_name(runtime.source.active.device)
 	end
 	version = string.gsub(version, "^%s*(.-)%s*$", "%1")
 	http.prepare_content("application/json")
@@ -136,4 +184,12 @@ function action_get_devices()
 	else
 		http.write_json({ code = 0, devices = devices })
 	end
+end
+
+function action_restart()
+	local sys = require "luci.sys"
+	local http = require "luci.http"
+	sys.call("/etc/init.d/miair restart >/dev/null 2>&1")
+	http.prepare_content("application/json")
+	http.write_json({ code = 0, msg = "服务已重启" })
 end

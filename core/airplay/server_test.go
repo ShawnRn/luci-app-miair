@@ -125,7 +125,8 @@ func TestParseAirPlayVolume(t *testing.T) {
 		want int
 	}{
 		{"volume: 0.000000\r\n", 100},
-		{"volume: -15.000000\r\n", 50},
+		{"volume: -15.000000\r\n", 66},
+		{"volume: -20.000000\r\n", 55},
 		{"volume: -30.000000\r\n", 0},
 		{"volume: -144.000000\r\n", 0},
 	}
@@ -137,5 +138,87 @@ func TestParseAirPlayVolume(t *testing.T) {
 	}
 	if _, ok := parseAirPlayVolume([]byte("progress: 1/2/3\r\n")); ok {
 		t.Fatal("non-volume parameter was accepted")
+	}
+}
+
+func TestDispatchRTSP_GetParameter(t *testing.T) {
+	s, err := NewServer("test", 5000, 8300, "/stream.wav", 1500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.GetVolume = func() int { return 70 }
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	session := &airplaySession{
+		server: s,
+		id:     "test1",
+		device: "127.0.0.1:1234",
+		conn:   serverConn,
+		hub:    NewAudioStreamHub(1500),
+	}
+	defer session.hub.Close()
+
+	go func() {
+		headers := map[string]string{
+			"cseq": "4",
+		}
+		session.dispatchRTSP("GET_PARAMETER", "rtsp://test/test1", headers, []byte("volume\r\n"))
+	}()
+
+	buf := make([]byte, 1024)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := string(buf[:n])
+	if !bytes.Contains(buf[:n], []byte("RTSP/1.0 200 OK")) {
+		t.Fatalf("expected 200 OK, got: %s", resp)
+	}
+	if !bytes.Contains(buf[:n], []byte("Content-Type: text/parameters")) {
+		t.Fatalf("expected Content-Type: text/parameters, got: %s", resp)
+	}
+	// Speaker 70% volume maps to slider 55% = (55/100)*30 - 30 = -13.500000 dB
+	if !bytes.Contains(buf[:n], []byte("volume: -13.500000")) {
+		t.Fatalf("expected volume: -13.500000, got: %s", resp)
+	}
+}
+
+func TestDispatchRTSP_RecordLatency(t *testing.T) {
+	s, err := NewServer("test", 5000, 8300, "/stream.wav", 1500)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	session := &airplaySession{
+		server: s,
+		id:     "test2",
+		device: "127.0.0.1:1234",
+		conn:   serverConn,
+		hub:    NewAudioStreamHub(1500),
+	}
+	defer session.hub.Close()
+
+	go func() {
+		headers := map[string]string{
+			"cseq": "5",
+		}
+		session.dispatchRTSP("RECORD", "rtsp://test/test2", headers, nil)
+	}()
+
+	buf := make([]byte, 1024)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := string(buf[:n])
+	if !bytes.Contains(buf[:n], []byte("Audio-Latency: 4410")) {
+		t.Fatalf("expected Audio-Latency: 4410, got: %s", resp)
 	}
 }

@@ -57,7 +57,7 @@ func waitFor(t *testing.T, condition func() bool) {
 func TestCoordinatorIgnoresStaleStopAfterPreemption(t *testing.T) {
 	manager := source.NewManager(source.PolicyLatest, 10*time.Second, source.ProtocolAirPlay)
 	speaker := &fakeSpeaker{}
-	coordinator := NewCoordinator(manager, speaker, "speaker", "")
+	coordinator := NewCoordinator(manager, speaker, "speaker", "", "")
 	defer coordinator.Close()
 
 	coordinator.Activate(source.Request{ID: "iphone", Protocol: source.ProtocolAirPlay, StreamURL: "http://iphone"})
@@ -77,7 +77,7 @@ func TestCoordinatorIgnoresStaleStopAfterPreemption(t *testing.T) {
 func TestCoordinatorPausesWhenCurrentOwnerStops(t *testing.T) {
 	manager := source.NewManager(source.PolicyLatest, 10*time.Second, source.ProtocolAirPlay)
 	speaker := &fakeSpeaker{}
-	coordinator := NewCoordinator(manager, speaker, "speaker", "")
+	coordinator := NewCoordinator(manager, speaker, "speaker", "", "")
 	defer coordinator.Close()
 
 	coordinator.Activate(source.Request{ID: "iphone", Protocol: source.ProtocolAirPlay, StreamURL: "http://iphone"})
@@ -95,7 +95,7 @@ func TestCoordinatorPausesWhenCurrentOwnerStops(t *testing.T) {
 func TestCoordinatorOnlyChangesVolumeForOwner(t *testing.T) {
 	manager := source.NewManager(source.PolicyLatest, 10*time.Second, source.ProtocolAirPlay)
 	speaker := &fakeSpeaker{}
-	coordinator := NewCoordinator(manager, speaker, "speaker", "")
+	coordinator := NewCoordinator(manager, speaker, "speaker", "", "")
 	defer coordinator.Close()
 
 	coordinator.Activate(source.Request{ID: "android", Protocol: source.ProtocolDLNA, StreamURL: "http://android"})
@@ -112,5 +112,37 @@ func TestCoordinatorOnlyChangesVolumeForOwner(t *testing.T) {
 	_, _, volumes := speaker.snapshot()
 	if volumes[0] != 100 {
 		t.Fatalf("volume = %d, want 100", volumes[0])
+	}
+	if coordinator.GetVolume() != 100 {
+		t.Fatalf("GetVolume() = %d, want 100", coordinator.GetVolume())
+	}
+}
+
+func TestCoordinatorVolumePersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	volPath := tmpDir + "/volume"
+
+	manager := source.NewManager(source.PolicyLatest, 10*time.Second, source.ProtocolAirPlay)
+	speaker := &fakeSpeaker{}
+	coordinator := NewCoordinator(manager, speaker, "speaker", "", volPath)
+	if coordinator.GetVolume() != 50 {
+		t.Fatalf("initial volume = %d, want default 50", coordinator.GetVolume())
+	}
+
+	coordinator.Activate(source.Request{ID: "session1", Protocol: source.ProtocolAirPlay, StreamURL: "http://test"})
+	coordinator.SetVolume("session1", 75)
+	if coordinator.GetVolume() != 75 {
+		t.Fatalf("updated volume = %d, want 75", coordinator.GetVolume())
+	}
+	coordinator.Close()
+
+	// Reopen with new coordinator to test persistence
+	manager2 := source.NewManager(source.PolicyLatest, 10*time.Second, source.ProtocolAirPlay)
+	speaker2 := &fakeSpeaker{}
+	coordinator2 := NewCoordinator(manager2, speaker2, "speaker", "", volPath)
+	defer coordinator2.Close()
+
+	if coordinator2.GetVolume() != 75 {
+		t.Fatalf("restored volume = %d, want 75", coordinator2.GetVolume())
 	}
 }

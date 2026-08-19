@@ -1,6 +1,6 @@
 module miair-core
 
-go 1.26.5
+go 1.22
 
 require (
 	github.com/brutella/dnssd v1.2.14 // indirect

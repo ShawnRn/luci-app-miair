@@ -34,6 +34,7 @@ var (
 	flagPreferred = flag.String("preferred-protocol", "airplay", "Preferred protocol for priority policy: airplay or dlna")
 	flagStatus    = flag.String("status-file", "/var/run/miair-status.json", "Runtime status JSON path")
 	flagStore     = flag.String("store", "/etc/miair/token.json", "Token store path")
+	flagVolume    = flag.String("volume-store", "/etc/miair/volume", "Volume store path")
 	flagList      = flag.Bool("list", false, "List XiaoAi devices in account")
 	flagQR        = flag.Bool("qr", false, "Start QR login flow")
 	flagPollQR    = flag.String("poll-qr", "", "Poll QR login lp url")
@@ -166,7 +167,7 @@ func main() {
 		log.Fatalf("preferred-protocol must be airplay or dlna")
 	}
 	manager := source.NewManager(policy, time.Duration(*flagIdle)*time.Second, preferred)
-	coordinator := playback.NewCoordinator(manager, account, targetDID, *flagStatus)
+	coordinator := playback.NewCoordinator(manager, account, targetDID, *flagStatus, *flagVolume)
 	defer coordinator.Close()
 
 	localIP := getLocalIP()
@@ -176,6 +177,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create AirPlay server: %v", err)
 		}
+		airplayServer.GetVolume = coordinator.GetVolume
 		airplayServer.OnSessionStart = func(info airplay.SessionInfo) bool {
 			streamURL := fmt.Sprintf("http://%s:%d%s", localIP, *flagHTTP, info.StreamPath)
 			decision := coordinator.Activate(source.Request{
@@ -199,6 +201,7 @@ func main() {
 	var dlnaServer *dlna.Server
 	if *flagDLNA {
 		dlnaServer = dlna.NewServer(*flagName, localIP, *flagDLNAPort)
+		dlnaServer.GetVolume = coordinator.GetVolume
 		dlnaServer.OnSessionStart = func(info dlna.SessionInfo) bool {
 			decision := coordinator.Activate(source.Request{
 				ID:        info.ID,

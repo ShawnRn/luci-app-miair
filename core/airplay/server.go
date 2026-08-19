@@ -145,6 +145,7 @@ type Server struct {
 	OnSessionStop     func(sessionID string)
 	OnSessionActivity func(sessionID string)
 	OnVolume          func(sessionID string, volume int)
+	GetVolume         func() int
 
 	rsaKey     *rsa.PrivateKey
 	mdnsServer *zeroconf.Server
@@ -165,11 +166,14 @@ type airplaySession struct {
 	conn   net.Conn
 	hub    *AudioStreamHub
 
-	mu      sync.Mutex
-	aesKey  []byte
-	aesIV   []byte
-	alacDec *alac.Decoder
-	owned   bool
+	mu            sync.Mutex
+	aesKey        []byte
+	aesIV         []byte
+	aesBlock      cipher.Block
+	alacDec       *alac.Decoder
+	owned         bool
+	recordAt      time.Time
+	hasUserVolume bool
 
 	rtpUDP     *net.UDPConn
 	rtpPort    int
@@ -312,8 +316,10 @@ func (s *Server) registerMDNS() {
 		"vn=65537",
 		"tp=TCP,UDP",
 		"md=0,1,2",
-		"am=" + s.Name,
+		"am=AirPort4,107",
 		"sf=0x4",
+		"vs=105.1",
+		"vv=2",
 	}
 
 	server, err := zeroconf.Register(
@@ -438,13 +444,43 @@ func (s *Server) startHTTPServer() error {
 		if _, err := w.Write(s.buildWavHeader()); err != nil {
 			return
 		}
+
+		ch := session.hub.Subscribe()
+		defer session.hub.Unsubscribe(ch)
+
+		// Fast priming: send an initial batch of frames or priming silence so
+		// the speaker player buffer watermark is reached immediately upon connection.
+		primingBytes := 32 * 1024 // ~92ms of 44.1kHz 16-bit stereo PCM
+		primingBuf := make([]byte, 0, primingBytes)
+
+	collectPriming:
+		for len(primingBuf) < primingBytes {
+			select {
+			case data, ok := <-ch:
+				if !ok {
+					break collectPriming
+				}
+				primingBuf = append(primingBuf, data...)
+			default:
+				break collectPriming
+			}
+		}
+
+		if len(primingBuf) < primingBytes {
+			pad := make([]byte, primingBytes-len(primingBuf))
+			primingBuf = append(primingBuf, pad...)
+		}
+
+		if len(primingBuf) > 0 {
+			if _, err := w.Write(primingBuf); err != nil {
+				return
+			}
+		}
+
 		flusher, ok := w.(http.Flusher)
 		if ok {
 			flusher.Flush()
 		}
-
-		ch := session.hub.Subscribe()
-		defer session.hub.Unsubscribe(ch)
 
 		for data := range ch {
 			if _, err := w.Write(data); err != nil {
@@ -561,6 +597,8 @@ func (s *airplaySession) dispatchRTSP(method, uri string, headers map[string]str
 		}
 	}
 
+	var respBody []byte
+
 	switch method {
 	case "OPTIONS":
 		respHeaders = append(respHeaders, "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER")
@@ -577,11 +615,12 @@ func (s *airplaySession) dispatchRTSP(method, uri string, headers map[string]str
 		respHeaders = append(respHeaders, "Session: "+s.id)
 		respHeaders = append(respHeaders, "Audio-Jack-Status: connected; type=analog")
 	case "RECORD":
+		s.recordAt = time.Now()
 		if !s.activate() {
 			respHeaders[0] = "RTSP/1.0 453 Not Enough Bandwidth"
 			break
 		}
-		respHeaders = append(respHeaders, "Audio-Latency: 11025")
+		respHeaders = append(respHeaders, "Audio-Latency: 4410")
 	case "FLUSH":
 		s.hub.Reset()
 	case "PAUSE":
@@ -589,14 +628,40 @@ func (s *airplaySession) dispatchRTSP(method, uri string, headers map[string]str
 		s.releaseOwnership()
 	case "TEARDOWN":
 		// The response is written before the deferred Close releases resources.
+	case "GET_PARAMETER":
+		vol := 55
+		if s.server.GetVolume != nil {
+			vol = s.server.GetVolume()
+		}
+		var sliderPercent int
+		if vol <= 0 {
+			sliderPercent = 0
+		} else if vol <= 55 {
+			sliderPercent = int(math.Round(float64(vol) / 55.0 * 33.0))
+		} else {
+			sliderPercent = int(math.Round(33.0 + float64(vol-55)/45.0*67.0))
+		}
+		var db float64
+		if sliderPercent <= 0 {
+			db = -144.0
+		} else {
+			db = (float64(sliderPercent)/100.0)*30.0 - 30.0
+		}
+		respBody = []byte(fmt.Sprintf("volume: %.6f\r\n", db))
+		respHeaders = append(respHeaders, "Content-Type: text/parameters")
+		respHeaders = append(respHeaders, fmt.Sprintf("Content-Length: %d", len(respBody)))
 	case "SET_PARAMETER":
 		if volume, ok := parseAirPlayVolume(body); ok && s.server.OnVolume != nil {
+			s.hasUserVolume = true
 			s.server.OnVolume(s.id, volume)
 			s.touch()
 		}
 	}
 
 	resp := strings.Join(respHeaders, "\r\n") + "\r\n\r\n"
+	if len(respBody) > 0 {
+		resp += string(respBody)
+	}
 	if _, err := s.conn.Write([]byte(resp)); err != nil {
 		return false
 	}
@@ -624,9 +689,28 @@ func parseAirPlayVolume(body []byte) (int, bool) {
 		if db > 0 {
 			db = 0
 		}
-		return int(math.Round((db + 30) / 30 * 100)), true
+		rawPercent := int(math.Round((db + 30) / 30 * 100))
+		return mapAirPlayLoudness(rawPercent), true
 	}
 	return 0, false
+}
+
+// mapAirPlayLoudness maps Apple's AirPlay linear slider percentage (0~100)
+// to XiaoAi speaker's physical volume curve.
+// Apple defaults its initial slider position to 33% (-20.0 dB).
+// We map 33% to 55% base listening volume, and smoothly interpolate [0..33]->[0..55]
+// and [33..100]->[55..100] to eliminate sudden volume drops when touching the slider.
+func mapAirPlayLoudness(raw int) int {
+	if raw <= 0 {
+		return 0
+	}
+	if raw >= 100 {
+		return 100
+	}
+	if raw <= 33 {
+		return int(math.Round(float64(raw) / 33.0 * 55.0))
+	}
+	return int(math.Round(55.0 + float64(raw-33)/67.0*45.0))
 }
 
 func (s *airplaySession) streamPath() string {
@@ -739,6 +823,12 @@ func (s *airplaySession) parseSDP(sdp string) {
 				key, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, s.server.rsaKey, encKey, nil)
 				if err == nil {
 					s.aesKey = key
+					if len(key) == 16 {
+						block, err := aes.NewCipher(key)
+						if err == nil {
+							s.aesBlock = block
+						}
+					}
 					log.Printf("[AirPlay] RSA AES key decoded successfully (%d bytes)", len(key))
 				}
 			}
@@ -817,17 +907,13 @@ func (s *airplaySession) handleUDPPackets() {
 			log.Printf("[RTP] Received %d audio packets", pktCount)
 		}
 
-		if len(s.aesKey) == 16 && len(s.aesIV) == 16 {
-			block, err := aes.NewCipher(s.aesKey)
-			if err == nil {
-				alignedLen := (len(payload) / 16) * 16
-				if alignedLen > 0 {
-					// Fresh IV copy each time - CBC modifies IV in place
-					iv := make([]byte, 16)
-					copy(iv, s.aesIV)
-					mode := cipher.NewCBCDecrypter(block, iv)
-					mode.CryptBlocks(payload[:alignedLen], payload[:alignedLen])
-				}
+		if s.aesBlock != nil && len(s.aesIV) == 16 {
+			alignedLen := (len(payload) / 16) * 16
+			if alignedLen > 0 {
+				iv := make([]byte, 16)
+				copy(iv, s.aesIV)
+				mode := cipher.NewCBCDecrypter(s.aesBlock, iv)
+				mode.CryptBlocks(payload[:alignedLen], payload[:alignedLen])
 			}
 		}
 

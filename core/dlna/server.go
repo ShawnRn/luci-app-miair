@@ -46,6 +46,7 @@ type Server struct {
 	OnSessionStop     func(sessionID string)
 	OnSessionActivity func(sessionID string)
 	OnVolume          func(sessionID string, volume int)
+	GetVolume         func() int
 
 	mu              sync.RWMutex
 	currentURI      string

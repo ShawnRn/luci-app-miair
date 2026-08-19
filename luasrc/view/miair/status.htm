@@ -46,6 +46,7 @@
 		<div class="cbi-value-field">
 			<input type="button" class="cbi-button cbi-button-action" id="btn_qr_login" value="<%:米家/小米 App 扫码授权登录%>" onclick="startQRLogin()" />
 			<input type="button" class="cbi-button cbi-button-apply" id="btn_fetch_devices" style="margin-left: 8px;" value="<%:刷新/自动识别小爱音箱 DID%>" onclick="fetchDevices()" />
+			<input type="button" class="cbi-button cbi-button-reset" id="btn_restart_service" style="margin-left: 8px;" value="<%:重启投播服务%>" onclick="restartService()" />
 			<span id="miair_action_msg" style="margin-left: 12px; font-size: 13px;"></span>
 			
 			<div id="miair_qr_container" style="display: none; margin-top: 15px;">
@@ -189,6 +190,24 @@ function fetchDevices() {
 				msg.innerHTML = '<span style="color: green; font-weight: bold;"><%:已自动匹配小爱音箱: %>' + dev.name + ' (DID: ' + dev.did + ' / 型号: ' + dev.hardware + ' / IP: ' + dev.ip + ')</span>';
 			} else {
 				msg.innerHTML = '<span style="color: orange;"><%:未找到可用的小爱音箱%></span>';
+			}
+		}
+	);
+}
+
+function restartService() {
+	var msg = document.getElementById('miair_action_msg');
+	var btn = document.getElementById('btn_restart_service');
+	if (btn) btn.disabled = true;
+	msg.innerHTML = '<span style="color: #007bff;"><%:正在重启投播服务...%></span>';
+	
+	XHR.get('<%=luci.dispatcher.build_url("admin", "services", "miair", "restart")%>', null,
+		function(x, data) {
+			if (btn) btn.disabled = false;
+			if (data && data.code === 0) {
+				msg.innerHTML = '<span style="color: green; font-weight: bold;"><%:✓ 投播服务已成功重启%></span>';
+			} else {
+				msg.innerHTML = '<span style="color: red;"><%:重启服务失败%></span>';
 			}
 		}
 	);
