@@ -179,7 +179,7 @@ exec "$APK" mkpkg \
 	--output "$APK_FILE"
 EOF
 	chmod 0755 "$BUILD_DIR/make-apk.sh"
-	export APK APK_FILE PACKAGE VERSION RELEASE ARCH_APK
+	export APK APK_FILE PACKAGE VERSION RELEASE ARCH_APK ROOT CONTROL
 	fakeroot "$BUILD_DIR/make-apk.sh"
 	echo "Created $APK_FILE"
 else
