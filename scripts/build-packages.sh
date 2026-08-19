@@ -100,21 +100,34 @@ IPK="$OUTPUT_DIR/${PACKAGE}_${VERSION}-${RELEASE}_${ARCH_IPK}.ipk"
 printf '2.0\n' > "$BUILD_DIR/debian-binary"
 rm -f "$IPK"
 
-python3 - <<PYEOF
+if command -v fakeroot >/dev/null 2>&1; then
+	cat > "$BUILD_DIR/make-tars.sh" <<'EOF'
+#!/bin/sh
+set -eu
+chown -R 0:0 "$CONTROL" "$ROOT" "$BUILD_DIR/debian-binary"
+(cd "$CONTROL" && tar -czf "$BUILD_DIR/control.tar.gz" .)
+(cd "$ROOT" && tar -czf "$BUILD_DIR/data.tar.gz" .)
+(cd "$BUILD_DIR" && tar -czf "$IPK" ./debian-binary ./data.tar.gz ./control.tar.gz)
+EOF
+	chmod 0755 "$BUILD_DIR/make-tars.sh"
+	export CONTROL ROOT BUILD_DIR IPK
+	fakeroot "$BUILD_DIR/make-tars.sh"
+else
+	python3 - <<PYEOF
 import os, sys, tarfile
 
-def create_tar_gz(src_dir, output_path, arc_prefix="."):
+def create_tar_gz(src_dir, output_path):
     with tarfile.open(output_path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
         for root, dirs, files in os.walk(src_dir):
             rel_dir = os.path.relpath(root, src_dir)
             if rel_dir == ".":
-                target_dir = arc_prefix
+                target_dir = "."
             else:
-                target_dir = os.path.normpath(os.path.join(arc_prefix, rel_dir))
+                target_dir = "./" + rel_dir
 
             for d in sorted(dirs):
                 full = os.path.join(root, d)
-                arcname = os.path.normpath(os.path.join(target_dir, d))
+                arcname = target_dir + "/" + d if target_dir != "." else "./" + d
                 ti = tar.gettarinfo(full, arcname=arcname)
                 ti.uid = 0
                 ti.gid = 0
@@ -124,7 +137,7 @@ def create_tar_gz(src_dir, output_path, arc_prefix="."):
 
             for f in sorted(files):
                 full = os.path.join(root, f)
-                arcname = os.path.normpath(os.path.join(target_dir, f))
+                arcname = target_dir + "/" + f if target_dir != "." else "./" + f
                 ti = tar.gettarinfo(full, arcname=arcname)
                 ti.uid = 0
                 ti.gid = 0
@@ -138,8 +151,8 @@ control_dir = "$CONTROL"
 root_dir = "$ROOT"
 ipk_path = "$IPK"
 
-create_tar_gz(control_dir, os.path.join(build_dir, "control.tar.gz"), "./")
-create_tar_gz(root_dir, os.path.join(build_dir, "data.tar.gz"), "./")
+create_tar_gz(control_dir, os.path.join(build_dir, "control.tar.gz"))
+create_tar_gz(root_dir, os.path.join(build_dir, "data.tar.gz"))
 
 with tarfile.open(ipk_path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
     for name in ["debian-binary", "data.tar.gz", "control.tar.gz"]:
@@ -152,6 +165,7 @@ with tarfile.open(ipk_path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
         with open(full, "rb") as fp:
             tar.addfile(ti, fp)
 PYEOF
+fi
 
 echo "Created $IPK"
 
