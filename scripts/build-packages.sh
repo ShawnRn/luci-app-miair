@@ -250,9 +250,9 @@ echo "==> Generating SHA256 checksums..."
 	cd "$OUTPUT_DIR"
 	rm -f SHA256SUMS
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum *.ipk ${APK:+*.apk} > SHA256SUMS 2>/dev/null || sha256sum *.ipk > SHA256SUMS
+		sha256sum -- *.ipk ${APK:+*.apk} > SHA256SUMS 2>/dev/null || sha256sum -- *.ipk > SHA256SUMS
 	else
-		shasum -a 256 *.ipk ${APK:+*.apk} > SHA256SUMS 2>/dev/null || shasum -a 256 *.ipk > SHA256SUMS
+		shasum -a 256 -- *.ipk ${APK:+*.apk} > SHA256SUMS 2>/dev/null || shasum -a 256 -- *.ipk > SHA256SUMS
 	fi
 )
 echo "Packages built successfully in $OUTPUT_DIR"
