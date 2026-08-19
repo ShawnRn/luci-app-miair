@@ -289,7 +289,7 @@ const rice_threshold = 8 // maximum number of bits for a rice prefix.
 func (alac *Alac) entropyDecodeValue(
 	readSampleSize int,
 	k int,
-	rice_kmodifier_mask int,
+	rice_kmodifier_mask uint32,
 ) int32 {
 	x := int32(0) // decoded value
 
@@ -311,7 +311,7 @@ func (alac *Alac) entropyDecodeValue(
 			extraBits := int(alac.readbits(k))
 
 			// x = x * (2^k - 1)
-			x *= int32((((1 << uint(k)) - 1) & rice_kmodifier_mask))
+			x *= int32(uint32((1<<uint(k))-1) & rice_kmodifier_mask)
 
 			if extraBits > 1 {
 				x += int32(extraBits - 1)
@@ -331,7 +331,7 @@ func (alac *Alac) entropyRiceDecode(
 	rice_initialhistory int,
 	rice_kmodifier int,
 	rice_historymult int,
-	rice_kmodifier_mask int,
+	rice_kmodifier_mask uint32,
 ) {
 	var (
 		history      int = rice_initialhistory

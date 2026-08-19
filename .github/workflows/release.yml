@@ -74,32 +74,38 @@ jobs:
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
-          ipk="dist/luci-app-miair_${version}-1_aarch64_cortex-a53.ipk"
-          apk="dist/luci-app-miair-${version}-r1.aarch64_cortex-a53.apk"
 
-          test "$(tar -tzf "$ipk" | tr '\n' ' ')" = \
-            "./debian-binary ./data.tar.gz ./control.tar.gz "
-          work="$(mktemp -d)"
-          tar -xzf "$ipk" -C "$work"
-          test "$(cat "$work/debian-binary")" = "2.0"
-          tar -tzf "$work/control.tar.gz" > /tmp/miair-control-files.txt
-          tar -tzf "$work/data.tar.gz" > /tmp/miair-data-files.txt
-          tar -tvzf "$work/data.tar.gz" > /tmp/miair-data-details.txt
-          grep -qx './control' /tmp/miair-control-files.txt
-          grep -qx './usr/bin/miair-core' /tmp/miair-data-files.txt
-          grep -q 'root/root' /tmp/miair-data-details.txt
+          for ipk in dist/*.ipk; do
+            echo "Verifying $ipk..."
+            test "$(tar -tzf "$ipk" | tr '\n' ' ')" = \
+              "./debian-binary ./data.tar.gz ./control.tar.gz "
+            work="$(mktemp -d)"
+            tar -xzf "$ipk" -C "$work"
+            test "$(cat "$work/debian-binary")" = "2.0"
+            tar -tzf "$work/control.tar.gz" > /tmp/miair-control-files.txt
+            tar -tzf "$work/data.tar.gz" > /tmp/miair-data-files.txt
+            tar -tvzf "$work/data.tar.gz" > /tmp/miair-data-details.txt
+            grep -qx './control' /tmp/miair-control-files.txt
+            grep -qx './usr/bin/miair-core' /tmp/miair-data-files.txt
+            grep -q 'root/root' /tmp/miair-data-details.txt
+            rm -rf "$work"
+          done
 
-          /tmp/apk-tools/build/src/apk adbdump --format yaml "$apk" > /tmp/miair-apk.yml
-          grep -q 'name: luci-app-miair' /tmp/miair-apk.yml
-          grep -q "version: ${version}-r1" /tmp/miair-apk.yml
-          grep -q 'user: root' /tmp/miair-apk.yml
-          grep -q 'group: root' /tmp/miair-apk.yml
+          for apk in dist/*.apk; do
+            echo "Verifying $apk..."
+            /tmp/apk-tools/build/src/apk adbdump --format yaml "$apk" > /tmp/miair-apk.yml
+            grep -q 'name: luci-app-miair' /tmp/miair-apk.yml
+            grep -q "version: ${version}-r1" /tmp/miair-apk.yml
+            grep -q 'user: root' /tmp/miair-apk.yml
+            grep -q 'group: root' /tmp/miair-apk.yml
+          done
+
           (cd dist && sha256sum --check SHA256SUMS)
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-miair-${{ github.ref_name }}-aarch64
+          name: luci-app-miair-${{ github.ref_name }}-all-arch
           path: dist/*
 
       - name: Publish GitHub Release
